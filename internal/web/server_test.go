@@ -422,3 +422,46 @@ func TestStaticAssetsAreVersioned(t *testing.T) {
 		}
 	}
 }
+
+func TestDashboardFilterIsRemembered(t *testing.T) {
+	e := newDemo(t)
+	resp, body := do(t, http.MethodGet, e.srv.URL+"/?topic=go&org=acme-labs", nil, nil, nil)
+	if resp.StatusCode != 200 || !strings.Contains(body, `id="dash-filters"`) {
+		t.Fatalf("filtered dashboard: %d", resp.StatusCode)
+	}
+	if strings.Contains(body, "acme/api ·") || !strings.Contains(body, "acme-labs/") {
+		t.Error("filter not applied to the dashboard")
+	}
+	var saved *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == dashCookie {
+			saved = c
+		}
+	}
+	if saved == nil {
+		t.Fatal("filter not remembered")
+	}
+
+	// A plain visit reopens the saved filter at a bookmarkable URL.
+	resp, _ = do(t, http.MethodGet, e.srv.URL+"/", saved, nil, nil)
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/?org=acme-labs&topic=go" {
+		t.Fatalf("saved filter: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	// Live refreshes keep the filter and the address bar in step.
+	resp, body = do(t, http.MethodGet, e.srv.URL+"/?f=1&repo=octocat/dotfiles", saved, map[string]string{"HX-Request": "true", "HX-Target": "dash"}, nil)
+	if resp.Header.Get("HX-Replace-Url") != "/?repo=octocat%2Fdotfiles" || strings.Contains(body, "acme-labs/") {
+		t.Errorf("htmx refresh: %q", resp.Header.Get("HX-Replace-Url"))
+	}
+
+	// Clearing forgets the filter.
+	resp, _ = do(t, http.MethodGet, e.srv.URL+"/?f=1", saved, nil, nil)
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/" {
+		t.Fatalf("clear: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	for _, c := range resp.Cookies() {
+		if c.Name == dashCookie && c.MaxAge >= 0 {
+			t.Error("clear should delete the cookie")
+		}
+	}
+}
