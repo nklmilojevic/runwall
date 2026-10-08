@@ -189,8 +189,12 @@ func TestSyncAllBackfillsAndReconciles(t *testing.T) {
 	}
 
 	// Later passes read the newest page with a stable URL, so unchanged repos answer 304.
-	if err := s.SyncAll(ctx); err != nil {
+	stats, err := s.syncAllStats(ctx)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if stats.Repos != 2 || stats.Reconciled != 1 {
+		t.Fatalf("pass stats should count both repos and reconcile only the unarchived one: %+v", stats)
 	}
 	f.mu.Lock()
 	last := f.created[len(f.created)-1]

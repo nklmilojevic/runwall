@@ -21,7 +21,7 @@ import (
 )
 
 type Config struct {
-	Interval  time.Duration // how often to reconcile
+	Interval  time.Duration // the pause between the end of one pass and the start of the next
 	Backfill  time.Duration // how far back to look for a repo seen for the first time
 	Retention time.Duration // how long to keep finished runs
 	MaxPages  int           // per repo and pass
@@ -131,10 +131,11 @@ func (s *Syncer) TriggerAll() {
 	}
 }
 
-// Run does a full sync immediately and then every Interval, plus any triggered installation syncs.
+// Run does a full sync immediately and then Interval after each pass ends, so a slow
+// pass never runs straight into the next. Triggered installation syncs run in between.
 func (s *Syncer) Run(ctx context.Context) {
 	s.syncAll(ctx)
-	t := time.NewTicker(s.cfg.Interval)
+	t := time.NewTimer(s.cfg.Interval)
 	defer t.Stop()
 	for {
 		select {
@@ -142,6 +143,7 @@ func (s *Syncer) Run(ctx context.Context) {
 			return
 		case <-t.C:
 			s.syncAll(ctx)
+			t.Reset(s.cfg.Interval)
 		case <-s.full:
 			s.syncAll(ctx)
 			t.Reset(s.cfg.Interval)
@@ -153,9 +155,22 @@ func (s *Syncer) Run(ctx context.Context) {
 	}
 }
 
+// passStats counts what a pass did, for the log.
+type passStats struct {
+	Repos      int // repos listed across installations
+	Reconciled int // repos whose runs were re-listed
+	JobRuns    int // runs whose jobs were backfilled
+}
+
+func (p *passStats) add(o passStats) {
+	p.Repos += o.Repos
+	p.Reconciled += o.Reconciled
+	p.JobRuns += o.JobRuns
+}
+
 func (s *Syncer) syncAll(ctx context.Context) {
 	start := s.now()
-	err := s.SyncAll(ctx)
+	stats, err := s.syncAllStats(ctx)
 	s.mu.Lock()
 	s.lastAt, s.lastErr = s.now(), err
 	s.mu.Unlock()
@@ -163,7 +178,8 @@ func (s *Syncer) syncAll(ctx context.Context) {
 		s.log.Error("sync", "err", err)
 		return
 	}
-	s.log.Info("sync complete", "took", s.now().Sub(start).Round(time.Millisecond))
+	s.log.Info("sync complete", "took", s.now().Sub(start).Round(time.Millisecond),
+		"repos", stats.Repos, "reconciled", stats.Reconciled, "skipped", stats.Repos-stats.Reconciled, "job_backfill", stats.JobRuns)
 	if s.cfg.Scorer != nil && s.allHealthy(ctx, lowBudget) {
 		if err := s.cfg.Scorer.ScoreDue(ctx); err != nil {
 			s.log.Error("score repos", "err", err)
@@ -210,12 +226,18 @@ func (s *Syncer) Budget(ctx context.Context) (ghapp.Rate, bool) {
 
 // SyncAll refreshes installations, their repos and runs, then prunes old data.
 func (s *Syncer) SyncAll(ctx context.Context) error {
+	_, err := s.syncAllStats(ctx)
+	return err
+}
+
+func (s *Syncer) syncAllStats(ctx context.Context) (passStats, error) {
+	var stats passStats
 	var remote []*github.Installation
 	opts := &github.ListOptions{PerPage: 100}
 	for {
 		page, resp, err := s.gh.App().Apps.ListInstallations(ctx, opts)
 		if err != nil {
-			return fmt.Errorf("list installations: %w", err)
+			return stats, fmt.Errorf("list installations: %w", err)
 		}
 		remote = append(remote, page...)
 		if resp.NextPage == 0 {
@@ -234,18 +256,18 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 		if err := s.store.UpsertInstallation(ctx, store.Installation{
 			ID: inst.GetID(), Account: inst.GetAccount().GetLogin(), AccountType: inst.GetAccount().GetType(),
 		}); err != nil {
-			return err
+			return stats, err
 		}
 	}
 	local, err := s.store.ListInstallations(ctx)
 	if err != nil {
-		return err
+		return stats, err
 	}
 	for _, inst := range local {
 		if !seen[inst.ID] {
 			s.log.Info("installation gone, removing", "installation", inst.ID, "account", inst.Account)
 			if err := s.store.DeleteInstallation(ctx, inst.ID); err != nil {
-				return err
+				return stats, err
 			}
 		}
 	}
@@ -255,7 +277,9 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 		if !seen[inst.GetID()] {
 			continue
 		}
-		if err := s.SyncInstallation(ctx, inst.GetID()); err != nil {
+		st, err := s.syncInstallation(ctx, inst.GetID())
+		stats.add(st)
+		if err != nil {
 			errs = append(errs, fmt.Errorf("installation %d (%s): %w", inst.GetID(), inst.GetAccount().GetLogin(), err))
 		}
 	}
@@ -264,18 +288,24 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 	if err := s.store.Prune(ctx, now.Add(-s.cfg.Retention), now.Add(-72*time.Hour)); err != nil {
 		errs = append(errs, fmt.Errorf("prune: %w", err))
 	}
-	return errors.Join(errs...)
+	return stats, errors.Join(errs...)
 }
 
 // SyncInstallation refreshes the repo list of one installation and reconciles each repo's runs.
 func (s *Syncer) SyncInstallation(ctx context.Context, id int64) error {
+	_, err := s.syncInstallation(ctx, id)
+	return err
+}
+
+func (s *Syncer) syncInstallation(ctx context.Context, id int64) (passStats, error) {
+	var stats passStats
 	gh := s.gh.Installation(id)
 	var remote []*github.Repository
 	opts := &github.ListOptions{PerPage: 100}
 	for {
 		page, resp, err := gh.Apps.ListRepos(ctx, opts)
 		if err != nil {
-			return fmt.Errorf("list repos: %w", err)
+			return stats, fmt.Errorf("list repos: %w", err)
 		}
 		remote = append(remote, page.Repositories...)
 		if resp.NextPage == 0 {
@@ -288,12 +318,12 @@ func (s *Syncer) SyncInstallation(ctx context.Context, id int64) error {
 	for _, r := range remote {
 		seen[r.GetID()] = true
 		if err := s.ing.Repo(ctx, ingest.RepoFromGitHub(r, id)); err != nil {
-			return err
+			return stats, err
 		}
 	}
 	local, err := s.store.ListRepos(ctx, id)
 	if err != nil {
-		return err
+		return stats, err
 	}
 	var gone []int64
 	for _, r := range local {
@@ -302,13 +332,13 @@ func (s *Syncer) SyncInstallation(ctx context.Context, id int64) error {
 		}
 	}
 	if err := s.store.DeleteRepos(ctx, gone); err != nil {
-		return err
+		return stats, err
 	}
 
 	// Phase 1: bring runs up to date. Busy repos every pass, quiet ones less often.
 	activity, err := s.store.RepoActivity(ctx)
 	if err != nil {
-		return err
+		return stats, err
 	}
 	now := s.now()
 	var due []store.Repo
@@ -317,16 +347,18 @@ func (s *Syncer) SyncInstallation(ctx context.Context, id int64) error {
 			due = append(due, r)
 		}
 	}
+	stats.Repos, stats.Reconciled = len(seen), len(due)
 	if err := forEach(ctx, s, id, due, repoName, func(ctx context.Context, r store.Repo) error { return s.SyncRepo(ctx, gh, r) }); err != nil {
-		return err
+		return stats, err
 	}
 
 	// Phase 2: load jobs for older runs (for cost estimates), only while the budget is healthy.
 	if !s.healthy(id, lowBudget) {
 		s.log.Info("API budget low; skipping job backfill this pass", "installation", id)
-		return nil
+		return stats, nil
 	}
-	return s.backfillJobs(ctx, id, gh, local)
+	stats.JobRuns, err = s.backfillJobs(ctx, id, gh, local)
+	return stats, err
 }
 
 // lowBudget is the share of the hourly rate limit kept for live work: below it, job
@@ -548,20 +580,21 @@ func (s *Syncer) ingestRuns(ctx context.Context, gh *github.Client, r store.Repo
 
 // backfillJobs loads jobs for up to JobBackfill finished runs of an installation,
 // newest first, so cost estimates cover runs that arrived before jobs were tracked.
-func (s *Syncer) backfillJobs(ctx context.Context, installationID int64, gh *github.Client, repos []store.Repo) error {
+// backfillJobs loads jobs for runs that have none yet and reports how many runs it tried.
+func (s *Syncer) backfillJobs(ctx context.Context, installationID int64, gh *github.Client, repos []store.Repo) (int, error) {
 	if s.cfg.JobBackfill <= 0 {
-		return nil
+		return 0, nil
 	}
 	missing, err := s.store.RunsMissingJobsFor(ctx, installationID, s.now().Add(-s.cfg.Retention), s.cfg.JobBackfill)
 	if err != nil || len(missing) == 0 {
-		return err
+		return 0, err
 	}
 	byID := make(map[int64]store.Repo, len(repos))
 	for _, r := range repos {
 		byID[r.ID] = r
 	}
 	name := func(m store.RunMissingJobs) string { return fmt.Sprintf("%s run %d", byID[m.RepoID].FullName, m.RunID) }
-	return forEach(ctx, s, installationID, missing, name, func(ctx context.Context, m store.RunMissingJobs) error {
+	return len(missing), forEach(ctx, s, installationID, missing, name, func(ctx context.Context, m store.RunMissingJobs) error {
 		r, ok := byID[m.RepoID]
 		if !ok || !s.healthy(installationID, lowBudget) {
 			return nil

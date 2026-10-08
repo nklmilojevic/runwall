@@ -89,7 +89,7 @@ func Load(getenv func(string) string, needGitHub bool) (Config, error) {
 	}
 	c.StuckThreshold = dur("STUCK_THRESHOLD", 5*time.Minute)
 	c.Backfill = dur("BACKFILL_WINDOW", 7*24*time.Hour)
-	c.Reconcile = dur("RECONCILE_INTERVAL", 3*time.Minute)
+	c.Reconcile = dur("RECONCILE_INTERVAL", 10*time.Minute)
 	c.Retention = dur("RETENTION", 90*24*time.Hour)
 	c.ColdInterval = dur("COLD_INTERVAL", time.Hour)
 	num := func(key string, def int) int {
