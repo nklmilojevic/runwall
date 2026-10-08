@@ -441,7 +441,7 @@ func (a *Auth) Load(w http.ResponseWriter, r *http.Request) *Viewer {
 	}
 	now := a.now()
 	if now.Sub(se.LastSeenAt) > idleTTL {
-		a.store.DeleteSession(ctx, se.IDHash)
+		a.dropSession(ctx, se.IDHash)
 		a.clearCookie(w, sessionCookie)
 		return nil
 	}
@@ -450,7 +450,7 @@ func (a *Auth) Load(w http.ResponseWriter, r *http.Request) *Viewer {
 	if se.KioskID != 0 {
 		k, err := a.store.GetKioskLink(ctx, se.KioskID)
 		if err != nil {
-			a.store.DeleteSession(ctx, se.IDHash)
+			a.dropSession(ctx, se.IDHash)
 			a.clearCookie(w, sessionCookie)
 			return nil
 		}
@@ -461,7 +461,7 @@ func (a *Auth) Load(w http.ResponseWriter, r *http.Request) *Viewer {
 
 	u, err := a.store.GetUser(ctx, se.UserID)
 	if err != nil {
-		a.store.DeleteSession(ctx, se.IDHash)
+		a.dropSession(ctx, se.IDHash)
 		a.clearCookie(w, sessionCookie)
 		return nil
 	}
@@ -471,7 +471,7 @@ func (a *Auth) Load(w http.ResponseWriter, r *http.Request) *Viewer {
 		gh, err := v.GitHub(ctx)
 		if err != nil {
 			a.log.Info("session ended", "login", u.Login, "reason", err)
-			a.store.DeleteSession(ctx, se.IDHash)
+			a.dropSession(ctx, se.IDHash)
 			a.clearCookie(w, sessionCookie)
 			return nil
 		}
@@ -481,13 +481,15 @@ func (a *Auth) Load(w http.ResponseWriter, r *http.Request) *Viewer {
 			// Keep the last known access rather than locking people out during a GitHub hiccup.
 			a.log.Error("refresh repo access", "login", u.Login, "err", err)
 		case !a.allowed(u.Login, n):
-			a.store.DeleteSession(ctx, se.IDHash)
+			a.dropSession(ctx, se.IDHash)
 			a.clearCookie(w, sessionCookie)
 			return nil
 		}
 		v.session.ReposCheckedAt = now
 		v.session.LastSeenAt = now
-		a.store.SaveSession(ctx, v.session)
+		if err := a.store.SaveSession(ctx, v.session); err != nil {
+			a.log.Error("save session", "err", err)
+		}
 		return v
 	}
 	a.touch(ctx, &v.session, now)
@@ -497,14 +499,22 @@ func (a *Auth) Load(w http.ResponseWriter, r *http.Request) *Viewer {
 func (a *Auth) touch(ctx context.Context, se *store.Session, now time.Time) {
 	if now.Sub(se.LastSeenAt) > time.Minute {
 		se.LastSeenAt = now
-		a.store.TouchSession(ctx, se.IDHash, now)
+		if err := a.store.TouchSession(ctx, se.IDHash, now); err != nil {
+			a.log.Error("touch session", "err", err)
+		}
+	}
+}
+
+func (a *Auth) dropSession(ctx context.Context, idHash string) {
+	if err := a.store.DeleteSession(ctx, idHash); err != nil {
+		a.log.Error("delete session", "err", err)
 	}
 }
 
 // Logout ends the session.
 func (a *Auth) Logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
-		a.store.DeleteSession(r.Context(), Hash(c.Value))
+		a.dropSession(r.Context(), Hash(c.Value))
 	}
 	a.clearCookie(w, sessionCookie)
 }

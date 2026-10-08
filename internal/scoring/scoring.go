@@ -63,7 +63,7 @@ type Breakdown struct {
 
 func ParseBreakdown(s string) Breakdown {
 	var b Breakdown
-	json.Unmarshal([]byte(s), &b)
+	_ = json.Unmarshal([]byte(s), &b) // a corrupt breakdown renders as empty
 	return b
 }
 
@@ -183,49 +183,49 @@ func (s *Scorer) gather(ctx context.Context, r store.Repo) (inputs, error) {
 		}
 	}
 
-	in.dependabo = s.alerts(ctx, func() (int, *github.Response, error, []string) {
-		alerts, resp, err := gh.Dependabot.ListRepoAlerts(ctx, r.Owner, r.Name, &github.ListAlertsOptions{State: github.Ptr("open"), ListCursorOptions: github.ListCursorOptions{PerPage: 100}})
+	in.dependabo = s.alerts(ctx, func() ([]string, *github.Response, error) {
+		alerts, resp, err := gh.Dependabot.ListRepoAlerts(ctx, r.Owner, r.Name, &github.ListAlertsOptions{State: new("open"), ListCursorOptions: github.ListCursorOptions{PerPage: 100}})
 		var sev []string
 		for _, a := range alerts {
 			sev = append(sev, a.GetSecurityAdvisory().GetSeverity())
 		}
-		return len(alerts), resp, err, sev
+		return sev, resp, err
 	})
-	in.codeScan = s.alerts(ctx, func() (int, *github.Response, error, []string) {
+	in.codeScan = s.alerts(ctx, func() ([]string, *github.Response, error) {
 		alerts, resp, err := gh.CodeScanning.ListAlertsForRepo(ctx, r.Owner, r.Name, &github.AlertListOptions{State: "open", ListOptions: github.ListOptions{PerPage: 100}})
 		var sev []string
 		for _, a := range alerts {
 			sev = append(sev, a.GetRule().GetSecuritySeverityLevel())
 		}
-		return len(alerts), resp, err, sev
+		return sev, resp, err
 	})
-	in.secrets = s.alerts(ctx, func() (int, *github.Response, error, []string) {
+	in.secrets = s.alerts(ctx, func() ([]string, *github.Response, error) {
 		alerts, resp, err := gh.SecretScanning.ListAlertsForRepo(ctx, r.Owner, r.Name, &github.SecretScanningAlertListOptions{State: "open", ListOptions: github.ListOptions{PerPage: 100}})
 		sev := make([]string, len(alerts))
 		for i := range alerts {
 			sev[i] = "critical" // a leaked secret is always urgent
 		}
-		return len(alerts), resp, err, sev
+		return sev, resp, err
 	})
 
 	if r.DefaultBranch != "" {
 		_, resp, err := gh.Repositories.GetBranchProtection(ctx, r.Owner, r.Name, r.DefaultBranch)
 		switch {
 		case err == nil:
-			in.protected = github.Ptr(true)
+			in.protected = new(true)
 		case notAccessible(err) || status(resp) == http.StatusForbidden:
 			// Administration: read missing (or a plan without branch protection); fall back to rulesets below.
 		case status(resp) == http.StatusNotFound:
-			in.protected = github.Ptr(false)
+			in.protected = new(false)
 		}
 		// Rulesets protect branches too and only need Metadata: read.
 		req, err := gh.NewRequest(ctx, http.MethodGet, fmt.Sprintf("repos/%s/%s/rules/branches/%s", r.Owner, r.Name, r.DefaultBranch), nil)
 		if err == nil {
 			var rules []json.RawMessage
 			if _, err := gh.Do(req, &rules); err == nil && len(rules) > 0 {
-				in.protected = github.Ptr(true)
+				in.protected = new(true)
 			} else if err == nil && in.protected == nil {
-				in.protected = github.Ptr(false)
+				in.protected = new(false)
 			}
 		}
 	}
@@ -283,8 +283,8 @@ func (s *Scorer) hasTestJob(ctx context.Context, repoID int64) bool {
 	return false
 }
 
-func (s *Scorer) alerts(_ context.Context, list func() (int, *github.Response, error, []string)) alertCount {
-	_, resp, err, sev := list()
+func (s *Scorer) alerts(_ context.Context, list func() ([]string, *github.Response, error)) alertCount {
+	sev, resp, err := list()
 	switch {
 	case err == nil:
 		a := alertCount{available: true, enabled: true}

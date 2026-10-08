@@ -10,12 +10,12 @@ import (
 func TestRunFromGitHub(t *testing.T) {
 	ts := github.Timestamp{Time: time.Date(2026, 10, 7, 10, 0, 0, 500, time.FixedZone("CEST", 7200))}
 	r := RunFromGitHub(&github.WorkflowRun{
-		ID:              github.Ptr(int64(1)),
-		DisplayTitle:    github.Ptr("  First line\nsecond"),
-		HeadCommit:      &github.HeadCommit{Message: github.Ptr("commit\nbody")},
-		Actor:           &github.User{Login: github.Ptr("someone")},
-		TriggeringActor: &github.User{Login: github.Ptr("renovate[bot]"), Type: github.Ptr("Bot")},
-		PullRequests:    []*github.PullRequest{{Number: github.Ptr(12)}},
+		ID:              new(int64(1)),
+		DisplayTitle:    new("  First line\nsecond"),
+		HeadCommit:      &github.HeadCommit{Message: new("commit\nbody")},
+		Actor:           &github.User{Login: new("someone")},
+		TriggeringActor: &github.User{Login: new("renovate[bot]"), Type: new("Bot")},
+		PullRequests:    []*github.PullRequest{{Number: new(12)}},
 		CreatedAt:       &ts,
 	}, 9)
 	if r.Title != "First line" || r.CommitMessage != "commit" {
@@ -34,9 +34,9 @@ func TestRunFromGitHub(t *testing.T) {
 
 func TestIsBot(t *testing.T) {
 	cases := map[*github.User]bool{
-		{Login: github.Ptr("dependabot[bot]")}:                   true,
-		{Login: github.Ptr("ci-app"), Type: github.Ptr("Bot")}:   true,
-		{Login: github.Ptr("octocat"), Type: github.Ptr("User")}: false,
+		{Login: new("dependabot[bot]")}:            true,
+		{Login: new("ci-app"), Type: new("Bot")}:   true,
+		{Login: new("octocat"), Type: new("User")}: false,
 		nil: false,
 	}
 	for u, want := range cases {

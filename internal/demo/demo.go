@@ -96,7 +96,9 @@ func Seed(ctx context.Context, st *store.Store, now time.Time) error {
 		"Go SDK for the public API", "Command-line client", "Machine and editor configuration"}
 	for ri, r := range repos {
 		inst := int64(100 + ri/2)
-		st.UpsertInstallation(ctx, store.Installation{ID: inst, Account: r.owner, AccountType: "Organization"})
+		if err := st.UpsertInstallation(ctx, store.Installation{ID: inst, Account: r.owner, AccountType: "Organization"}); err != nil {
+			return err
+		}
 		if err := st.UpsertRepo(ctx, store.Repo{ID: int64(ri + 1), InstallationID: inst, Owner: r.owner, Name: r.name,
 			FullName: r.owner + "/" + r.name, DefaultBranch: "main", Private: ri%2 == 0, Description: descriptions[ri],
 			PushedAt: now.Add(-time.Duration(ri*9) * 24 * time.Hour), OpenIssues: ri * 7}); err != nil {
@@ -131,15 +133,15 @@ func Seed(ctx context.Context, st *store.Store, now time.Time) error {
 		if rng.IntN(3) == 0 {
 			run.Event, run.HeadBranch, run.PRNumber = "pull_request", branches[rng.IntN(len(branches))], 200+rng.IntN(300)
 		}
-		switch {
-		case i == 0 || i == 2:
+		switch i {
+		case 0, 2:
 			run.Status = "in_progress"
-		case i == 1:
+		case 1:
 			run.Status = "queued"
-		case i == 3:
+		case 3:
 			run.Status, run.RunStartedAt = "queued", now.Add(-9*time.Minute)
 			run.CreatedAt = run.RunStartedAt
-		case i == 4:
+		case 4:
 			run.Status = "in_progress"
 		default:
 			run.Status = "completed"

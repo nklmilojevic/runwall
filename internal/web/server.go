@@ -110,7 +110,8 @@ func (s *Server) Routes(mux *http.ServeMux) {
 // assetVersions holds a short content hash per static file, computed once at startup.
 var assetVersions = func() map[string]string {
 	out := map[string]string{}
-	fs.WalkDir(staticFS, "static", func(path string, d fs.DirEntry, err error) error {
+	// The embedded FS can't fail to walk; a failure here is a build problem.
+	_ = fs.WalkDir(staticFS, "static", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
@@ -291,7 +292,9 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, v *auth.Viewer) 
 	w.Header().Set("X-Accel-Buffering", "no")
 	ch, unsubscribe := s.Hub.Subscribe()
 	defer unsubscribe()
-	fmt.Fprint(w, "retry: 3000\n\n")
+	if _, err := fmt.Fprint(w, "retry: 3000\n\n"); err != nil {
+		return
+	}
 	flusher.Flush()
 
 	ctx := r.Context()
@@ -310,10 +313,14 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, v *auth.Viewer) 
 					continue
 				}
 			}
-			fmt.Fprintf(w, "event: update\ndata: %d\n\n", id)
+			if _, err := fmt.Fprintf(w, "event: update\ndata: %d\n\n", id); err != nil {
+				return // the browser went away
+			}
 			flusher.Flush()
 		case <-keepalive.C:
-			fmt.Fprint(w, ": keepalive\n\n")
+			if _, err := fmt.Fprint(w, ": keepalive\n\n"); err != nil {
+				return
+			}
 			flusher.Flush()
 		}
 	}

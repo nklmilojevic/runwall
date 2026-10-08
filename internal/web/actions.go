@@ -243,7 +243,10 @@ func (s *Server) createKiosk(w http.ResponseWriter, r *http.Request, v *auth.Vie
 		return
 	}
 	ctx := r.Context()
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Couldn't read the form.", http.StatusBadRequest)
+		return
+	}
 	insts, err := s.Store.ListInstallations(ctx)
 	if err != nil {
 		s.fail(w, err)

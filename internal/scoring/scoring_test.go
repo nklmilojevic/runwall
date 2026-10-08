@@ -31,7 +31,7 @@ func TestGradeHealthyRepo(t *testing.T) {
 		dependabo: alertCount{available: true, enabled: true},
 		codeScan:  alertCount{available: true, enabled: true},
 		secrets:   alertCount{available: true, enabled: true},
-		protected: github.Ptr(true), ciRuns: 40, ciSuccess: 0.97, hasTestJobs: true, communityPct: -1,
+		protected: new(true), ciRuns: 40, ciSuccess: 0.97, hasTestJobs: true, communityPct: -1,
 	}
 	b := grade(in)
 	if got := Total(b); got != 100 || TierFor(got) != Gold {

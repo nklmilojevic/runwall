@@ -404,7 +404,7 @@ func forEach[T any](ctx context.Context, s *Syncer, installationID int64, items 
 			switch {
 			case errors.As(err, &rl):
 				if fatal == nil {
-					fatal = fmt.Errorf("rate limited until %s: %w", rl.Rate.Reset.Time.Format(time.Kitchen), err)
+					fatal = fmt.Errorf("rate limited until %s: %w", rl.Rate.Reset.Format(time.Kitchen), err)
 				}
 				cancel()
 			case errors.As(err, &ab):
