@@ -3,3 +3,4 @@
 *.db-shm
 *.db-wal
 deploy/cloudflared/config.yml
+.direnv/

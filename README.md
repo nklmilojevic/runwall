@@ -102,7 +102,7 @@ Select one of these methods to start Runwall:
 
 - **Docker Compose.** Use [`deploy/docker-compose.yml`](deploy/docker-compose.yml). It starts Runwall with a persistent volume. It can also start a Cloudflare Tunnel.
 - **Kubernetes.** Use the Kustomize base in [`deploy/k8s`](deploy/k8s). It has a Deployment with one replica, a PersistentVolumeClaim, a Service, an ExternalSecret for the secrets and a ConfigMap for the settings.
-- **Binary.** Build the binary with `go build ./cmd/runwall`. Or use `make run`. This command gives the secrets to Runwall with `op run --env-file=secrets.op`.
+- **Binary.** Build the binary with `go build ./cmd/runwall`. Or use `just run`. This command gives the secrets to Runwall with `op run --env-file=secrets.op`.
 
 Use only one replica. Runwall keeps its data in an SQLite file.
 
@@ -169,12 +169,26 @@ When Runwall stops, GitHub cannot send webhooks to it. GitHub does not send them
 
 ## Development
 
-```sh
-make test     # Run the tests with the generated templates.
-make demo     # Start with sample data on http://127.0.0.1:8080.
-make run      # Start with a real GitHub App. The secrets come from 1Password (secrets.op).
-make tunnel   # Start a cloudflared tunnel for /webhook only.
-```
+The Nix flake has all the development tools: Go, gopls, golangci-lint, just, SQLite, the GitHub CLI, the 1Password CLI, cloudflared, kubectl and kustomize.
+
+1. Start the development shell:
+
+   ```sh
+   nix develop
+   ```
+
+   If you use direnv, run `direnv allow` one time. Then the shell starts automatically in this directory.
+
+2. Run `just` to see all the recipes. These are the most important recipes:
+
+   ```sh
+   just test     # Run the tests with the race detector.
+   just lint     # Run golangci-lint.
+   just check    # Run the same checks as CI.
+   just demo     # Start with sample data on http://127.0.0.1:8080.
+   just run      # Start with a real GitHub App. The secrets come from 1Password (secrets.op).
+   just tunnel   # Start a cloudflared tunnel for /webhook only.
+   ```
 
 Runwall uses Go, [templ](https://templ.guide), [htmx](https://htmx.org) with server-sent events, [Chart.js](https://www.chartjs.org) and SQLite ([modernc.org/sqlite](https://modernc.org/sqlite), without CGO). The repository contains the generated `*_templ.go` files. After you change a `.templ` file, run `go tool templ generate`.
 

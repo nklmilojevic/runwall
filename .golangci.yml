@@ -1,0 +1,23 @@
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      # Errors from these are deliberately ignored (cleanup paths).
+      exclude-functions:
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Tx).Rollback
+        - (io.Closer).Close
+        - (io.ReadCloser).Close
+        - (net/http.ResponseWriter).Write
+        - (*github.com/nklmilojevic/runwall/internal/store.Store).Close
+    govet:
+      disable:
+        # Reports "type parameter inference is not yet supported" on generic calls; not actionable.
+        - inline
+  exclusions:
+    rules:
+      # Test setup ignores errors that the assertions would catch anyway.
+      - path: _test\.go
+        linters: [errcheck]
