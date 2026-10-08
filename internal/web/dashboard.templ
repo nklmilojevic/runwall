@@ -1,7 +1,10 @@
 package web
 
 import (
+	"net/url"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nklmilojevic/runwall/internal/store"
@@ -10,10 +13,71 @@ import (
 templ dashboardPage(d dashView) {
 	@layout(d.shell) {
 		@pageHead("Dashboard", d.Period.Label+" · "+scopeLabel(d.shell))
-		<div id="dash" hx-get="/" hx-trigger="sse:update throttle:3s, every 60s">
+		@dashFilters(d)
+		<div id="dash" hx-get="/" hx-include="#dash-filters" hx-trigger="sse:update throttle:3s, every 60s">
 			@dashBody(d)
 		</div>
 	}
+}
+
+// pickerSummary mirrors the summary app.js writes when a box is ticked.
+func pickerSummary(selected []string) string {
+	switch len(selected) {
+	case 0:
+		return "All"
+	case 1:
+		return selected[0]
+	}
+	return strconv.Itoa(len(selected)) + " selected"
+}
+
+// runsLink carries a single-org or single-repo dashboard filter over to the runs page, which takes one of each.
+func runsLink(f store.RepoFilter) string {
+	if len(f.Repos) == 1 && len(f.Owners) == 0 && len(f.Topics) == 0 {
+		return "/runs?repo=" + url.QueryEscape(f.Repos[0])
+	}
+	if len(f.Owners) == 1 && len(f.Repos) == 0 && len(f.Topics) == 0 {
+		return "/runs?org=" + url.QueryEscape(f.Owners[0])
+	}
+	return "/runs"
+}
+
+templ dashFilters(d dashView) {
+	<form id="dash-filters" class="filters card dash-filters" method="get" action="/" hx-get="/" hx-target="#dash" hx-trigger="change[target.type==='checkbox']" hx-sync="this:replace">
+		<input type="hidden" name="f" value="1"/>
+		@picker("Org", "org", d.Options.Owners, d.Filter.Owners, false)
+		@picker("Repo", "repo", d.Options.Repos, d.Filter.Repos, true)
+		if len(d.Options.Topics) > 0 {
+			@picker("Topic", "topic", d.Options.Topics, d.Filter.Topics, len(d.Options.Topics) > 8)
+		}
+		<a class="btn btn-sm" href="/?f=1" data-clear hidden?={ d.Filter.Empty() }>Clear</a>
+		<noscript><button type="submit" class="btn btn-sm">Apply</button></noscript>
+	</form>
+}
+
+templ picker(label, name string, options, selected []string, search bool) {
+	<details class="picker" data-picker>
+		<summary>
+			<span class="picker-label">{ label }</span>
+			<b class="picker-value" data-picker-value>{ pickerSummary(selected) }</b>
+		</summary>
+		<div class="picker-menu">
+			if search {
+				<input type="search" class="picker-search" placeholder={ "Find " + strings.ToLower(label) } aria-label={ "Find " + strings.ToLower(label) } autocomplete="off" spellcheck="false" data-picker-search/>
+			}
+			<div class="picker-list">
+				for _, o := range options {
+					<label class="chk">
+						<input type="checkbox" name={ name } value={ o } checked?={ slices.Contains(selected, o) }/>
+						<span>{ o }</span>
+					</label>
+				}
+				if len(options) == 0 {
+					<p class="note">Nothing to pick yet.</p>
+				}
+			</div>
+		</div>
+	</details>
 }
 
 templ kpi(ico, tone, label, value, sub string) {
@@ -67,7 +131,7 @@ templ dashBody(d dashView) {
 	<section class="card">
 		<div class="card-head">
 			<h2 class="card-title">Recent runs</h2>
-			<a class="link" href="/runs">View all</a>
+			<a class="link" href={ templ.URL(runsLink(d.Filter)) }>View all</a>
 		</div>
 		@recentList(d.Recent, d.Now)
 	</section>

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"slices"
 	"testing"
 	"time"
 )
@@ -358,5 +359,67 @@ func TestScopes(t *testing.T) {
 	runs, _ := s.MetricRuns(ctx, Scope{Owners: []string{"acme"}}, t0.Add(-time.Hour))
 	if len(runs) != 1 || runs[0].RepoID != 1 {
 		t.Fatalf("metric runs scoped: %+v", runs)
+	}
+}
+
+func TestRepoTopicsAndFilter(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	seedRepo(t, s, Repo{ID: 1, Owner: "acme", Name: "api", Topics: []string{"backend", "go"}})
+	seedRepo(t, s, Repo{ID: 2, Owner: "acme", Name: "web", Topics: []string{"frontend"}})
+	seedRepo(t, s, Repo{ID: 3, Owner: "other", Name: "go-tools", Topics: []string{"go-tools"}})
+	for id := int64(1); id <= 3; id++ {
+		mustUpsertRun(t, s, Run{ID: id, RepoID: id, RunAttempt: 1, Status: "completed", CreatedAt: t0, UpdatedAt: t0})
+	}
+
+	// A partial payload (nil topics) keeps the stored topics; an empty list clears them.
+	if err := s.UpsertRepo(ctx, Repo{ID: 2, Owner: "acme", Name: "web", FullName: "acme/web"}); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := s.GetRepo(ctx, 2); len(r.Topics) != 1 || r.Topics[0] != "frontend" {
+		t.Fatalf("partial payload dropped topics: %+v", r.Topics)
+	}
+
+	repos := func(f RepoFilter) []int64 {
+		feed, err := s.Feed(ctx, FeedFilter{Scope: Scope{All: true, Only: f}}, t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []int64
+		for _, r := range feed {
+			ids = append(ids, r.RepoID)
+		}
+		slices.Sort(ids)
+		return ids
+	}
+	cases := []struct {
+		f    RepoFilter
+		want []int64
+	}{
+		{RepoFilter{}, []int64{1, 2, 3}},
+		{RepoFilter{Topics: []string{"go"}}, []int64{1}}, // whole topics only, not go-tools
+		{RepoFilter{Topics: []string{"go", "frontend"}}, []int64{1, 2}},
+		{RepoFilter{Owners: []string{"acme"}}, []int64{1, 2}},
+		{RepoFilter{Repos: []string{"acme/web", "other/go-tools"}}, []int64{2, 3}},
+		{RepoFilter{Owners: []string{"acme"}, Repos: []string{"other/go-tools"}}, nil},
+	}
+	for _, c := range cases {
+		if got := repos(c.f); !slices.Equal(got, c.want) {
+			t.Errorf("%+v: got %v, want %v", c.f, got, c.want)
+		}
+	}
+
+	// The filter narrows a user's scope; it never widens it.
+	s.SetUserRepos(ctx, 42, []UserRepo{{RepoID: 1}})
+	runs, _ := s.MetricRuns(ctx, Scope{UserID: 42, Only: RepoFilter{Owners: []string{"acme", "other"}}}, t0.Add(-time.Hour))
+	if len(runs) != 1 || runs[0].RepoID != 1 {
+		t.Fatalf("filter widened the scope: %+v", runs)
+	}
+
+	if err := s.UpsertRepo(ctx, Repo{ID: 2, Owner: "acme", Name: "web", FullName: "acme/web", Topics: []string{}}); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := s.GetRepo(ctx, 2); len(r.Topics) != 0 {
+		t.Fatalf("empty topics should clear: %+v", r.Topics)
 	}
 }

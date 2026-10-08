@@ -19,27 +19,61 @@ const (
 
 // Scope limits what a viewer can see. The zero value sees nothing.
 type Scope struct {
-	All    bool     // demo mode and internal callers
-	UserID int64    // a signed-in user: repos in user_repos
-	Owners []string // a kiosk link: repos owned by these accounts
+	All    bool       // demo mode and internal callers
+	UserID int64      // a signed-in user: repos in user_repos
+	Owners []string   // a kiosk link: repos owned by these accounts
+	Only   RepoFilter // narrows any of the above
+}
+
+// RepoFilter keeps repos that match every non-empty list. Values within a list are alternatives.
+type RepoFilter struct {
+	Owners []string
+	Repos  []string // full names
+	Topics []string
+}
+
+func (f RepoFilter) Empty() bool {
+	return len(f.Owners) == 0 && len(f.Repos) == 0 && len(f.Topics) == 0
 }
 
 // clause returns a SQL condition on the repos table aliased as p.
 func (sc Scope) clause() (string, []any) {
+	cl, args := sc.base()
+	if len(sc.Only.Owners) > 0 {
+		cl += " AND p.owner IN (" + placeholders(len(sc.Only.Owners)) + ")"
+		args = appendStrings(args, sc.Only.Owners)
+	}
+	if len(sc.Only.Repos) > 0 {
+		cl += " AND p.full_name IN (" + placeholders(len(sc.Only.Repos)) + ")"
+		args = appendStrings(args, sc.Only.Repos)
+	}
+	if len(sc.Only.Topics) > 0 {
+		match := strings.TrimSuffix(strings.Repeat("instr(',' || p.topics || ',', ',' || ? || ',') > 0 OR ", len(sc.Only.Topics)), " OR ")
+		cl += " AND (" + match + ")"
+		args = appendStrings(args, sc.Only.Topics)
+	}
+	return cl, args
+}
+
+func (sc Scope) base() (string, []any) {
 	switch {
 	case sc.All:
 		return "1 = 1", nil
 	case sc.UserID != 0:
 		return "p.id IN (SELECT repo_id FROM user_repos WHERE user_id = ?)", []any{sc.UserID}
 	case len(sc.Owners) > 0:
-		ph := strings.TrimSuffix(strings.Repeat("?, ", len(sc.Owners)), ", ")
-		args := make([]any, len(sc.Owners))
-		for i, o := range sc.Owners {
-			args[i] = o
-		}
-		return "p.owner IN (" + ph + ")", args
+		return "p.owner IN (" + placeholders(len(sc.Owners)) + ")", appendStrings(nil, sc.Owners)
 	}
 	return "0 = 1", nil
+}
+
+func placeholders(n int) string { return strings.TrimSuffix(strings.Repeat("?, ", n), ", ") }
+
+func appendStrings(args []any, vs []string) []any {
+	for _, v := range vs {
+		args = append(args, v)
+	}
+	return args
 }
 
 // CanSeeRepo reports whether the scope includes a repo.

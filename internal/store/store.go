@@ -52,6 +52,7 @@ func migrate(db *sql.DB) error {
 		{"repos", "open_issues", `ALTER TABLE repos ADD COLUMN open_issues INTEGER NOT NULL DEFAULT 0`},
 		{"repos", "description", `ALTER TABLE repos ADD COLUMN description TEXT NOT NULL DEFAULT ''`},
 		{"runs", "jobs_fetched", `ALTER TABLE runs ADD COLUMN jobs_fetched INTEGER NOT NULL DEFAULT 0`},
+		{"repos", "topics", `ALTER TABLE repos ADD COLUMN topics TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, a := range added {
 		var n int
@@ -87,6 +88,7 @@ type Repo struct {
 	Private        bool
 	Description    string
 	OpenIssues     int
+	Topics         []string // nil when unknown, e.g. from a partial webhook payload
 	PushedAt       time.Time
 	LastSeenAt     time.Time
 }
@@ -246,26 +248,36 @@ func (s *Store) DeleteInstallation(ctx context.Context, id int64) error {
 // Repos
 
 const repoColumns = `id, installation_id, owner, name, full_name, default_branch, archived, fork, last_seen_at,
-	private, description, open_issues, pushed_at`
+	private, description, open_issues, pushed_at, topics`
 
 func scanRepo(sc interface{ Scan(...any) error }) (Repo, error) {
 	var r Repo
 	var archived, fork, private int
 	var seen, pushed int64
+	var topics string
 	err := sc.Scan(&r.ID, &r.InstallationID, &r.Owner, &r.Name, &r.FullName, &r.DefaultBranch, &archived, &fork, &seen,
-		&private, &r.Description, &r.OpenIssues, &pushed)
+		&private, &r.Description, &r.OpenIssues, &pushed, &topics)
+	r.Topics = []string{}
+	if topics != "" {
+		r.Topics = strings.Split(topics, ",")
+	}
 	r.Archived, r.Fork, r.Private, r.LastSeenAt, r.PushedAt = archived == 1, fork == 1, private == 1, fromUnix(seen), fromUnix(pushed)
 	return r, err
 }
 
 // UpsertRepo stores repository metadata. LastSeenAt is never touched here; see MarkRepoSeen.
-// An empty DefaultBranch keeps the stored one, because some webhook payloads carry partial repos.
+// An empty DefaultBranch or nil Topics keeps the stored value, because some webhook payloads carry partial repos.
 func (s *Store) UpsertRepo(ctx context.Context, r Repo) error {
+	var topics any
+	if r.Topics != nil {
+		topics = strings.Join(r.Topics, ",")
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO repos (id, installation_id, owner, name, full_name, default_branch, archived, fork,
-			private, description, open_issues, pushed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			private, description, open_issues, pushed_at, topics)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, coalesce(?, ''))
 		ON CONFLICT (id) DO UPDATE SET
+			topics = coalesce(?, repos.topics),
 			private = excluded.private,
 			description = excluded.description,
 			open_issues = excluded.open_issues,
@@ -278,7 +290,7 @@ func (s *Store) UpsertRepo(ctx context.Context, r Repo) error {
 			archived = excluded.archived,
 			fork = excluded.fork`,
 		r.ID, r.InstallationID, r.Owner, r.Name, r.FullName, r.DefaultBranch, boolInt(r.Archived), boolInt(r.Fork),
-		boolInt(r.Private), r.Description, r.OpenIssues, unix(r.PushedAt))
+		boolInt(r.Private), r.Description, r.OpenIssues, unix(r.PushedAt), topics, topics)
 	return err
 }
 

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nklmilojevic/runwall/internal/auth"
@@ -75,11 +76,17 @@ func (s *Server) kiosk(w http.ResponseWriter, r *http.Request) {
 
 type dashView struct {
 	shell
+	Filter   store.RepoFilter
+	Options  dashOptions
 	Sum      metrics.Summary
 	Active   []store.FeedRun
 	Recent   []store.FeedRun
 	Costs    costInfo
 	Threshld time.Duration
+}
+
+type dashOptions struct {
+	Owners, Repos, Topics []string
 }
 
 type costInfo struct {
@@ -100,25 +107,126 @@ func (s *Server) summary(ctx context.Context, sc store.Scope, p metrics.Period, 
 	return metrics.Compute(p, now, runs, jobs, s.Costs), nil
 }
 
+// dashCookie remembers the last dashboard filter, so a plain visit to / opens it again.
+const dashCookie = "dash"
+
+var dashKeys = []string{"org", "repo", "topic"}
+
+func parseDashFilter(q url.Values) store.RepoFilter {
+	clean := func(vs []string) []string {
+		vs = slices.DeleteFunc(slices.Clone(vs), func(v string) bool { return v == "" })
+		slices.Sort(vs)
+		return slices.Compact(vs)
+	}
+	return store.RepoFilter{Owners: clean(q["org"]), Repos: clean(q["repo"]), Topics: clean(q["topic"])}
+}
+
+// dashQuery encodes a filter as the dashboard's query string, without the leading "?".
+func dashQuery(f store.RepoFilter) string {
+	q := url.Values{}
+	for i, vs := range [][]string{f.Owners, f.Repos, f.Topics} {
+		for _, v := range vs {
+			q.Add(dashKeys[i], v)
+		}
+	}
+	return q.Encode()
+}
+
+func dashURL(f store.RepoFilter) string {
+	if f.Empty() {
+		return "/"
+	}
+	return "/?" + dashQuery(f)
+}
+
+// dashFilter reads the filter from the URL, or from the cookie when the URL has none.
+// A URL with filter keys, or with f=1 for an explicitly empty filter, replaces the cookie.
+func dashFilter(w http.ResponseWriter, r *http.Request) (f store.RepoFilter, fromCookie bool) {
+	q := r.URL.Query()
+	explicit := q.Has("f") || slices.ContainsFunc(dashKeys, q.Has)
+	if !explicit {
+		if c, err := r.Cookie(dashCookie); err == nil {
+			if raw, err := url.QueryUnescape(c.Value); err == nil {
+				if saved, err := url.ParseQuery(raw); err == nil {
+					return parseDashFilter(saved), true
+				}
+			}
+		}
+		return f, false
+	}
+	f = parseDashFilter(q)
+	want := url.QueryEscape(dashQuery(f))
+	if c, err := r.Cookie(dashCookie); err == nil && c.Value == want {
+		return f, false
+	}
+	c := &http.Cookie{Name: dashCookie, Value: want, Path: "/", MaxAge: 365 * 24 * 3600, HttpOnly: true, SameSite: http.SameSiteLaxMode}
+	if f.Empty() {
+		c.Value, c.MaxAge = "", -1
+	}
+	http.SetCookie(w, c)
+	return f, false
+}
+
+// dashOptionsFor lists what the viewer can filter by. Selected values stay listed even when no
+// longer visible, so they can be cleared.
+func (s *Server) dashOptionsFor(ctx context.Context, sc store.Scope, f store.RepoFilter) (dashOptions, error) {
+	repos, err := s.Store.VisibleRepos(ctx, sc)
+	if err != nil {
+		return dashOptions{}, err
+	}
+	o := dashOptions{Owners: f.Owners, Repos: f.Repos, Topics: f.Topics}
+	for _, r := range repos {
+		if r.Archived {
+			continue
+		}
+		o.Owners = append(o.Owners, r.Owner)
+		o.Repos = append(o.Repos, r.FullName)
+		o.Topics = append(o.Topics, r.Topics...)
+	}
+	for _, vs := range []*[]string{&o.Owners, &o.Repos, &o.Topics} {
+		*vs = slices.Clone(*vs)
+		slices.SortFunc(*vs, func(a, b string) int { return strings.Compare(strings.ToLower(a), strings.ToLower(b)) })
+		*vs = slices.Compact(*vs)
+	}
+	return o, nil
+}
+
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request, v *auth.Viewer) {
 	ctx := r.Context()
-	d := dashView{shell: s.shell(r, v, "dashboard", "Dashboard"), Threshld: s.StuckThreshold}
+	filter, fromCookie := dashFilter(w, r)
+	htmx := isHTMX(r) && r.Header.Get("HX-Target") == "dash"
+	if fromCookie && !isHTMX(r) && !filter.Empty() {
+		http.Redirect(w, r, dashURL(filter), http.StatusFound)
+		return
+	}
+	if !htmx && filter.Empty() && r.URL.Query().Has("f") {
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+	d := dashView{shell: s.shell(r, v, "dashboard", "Dashboard"), Filter: filter, Threshld: s.StuckThreshold}
+	sc := v.Scope
+	sc.Only = filter
 	var err error
-	if d.Sum, err = s.summary(ctx, v.Scope, d.Period, d.Now); err != nil {
+	if d.Options, err = s.dashOptionsFor(ctx, v.Scope, filter); err != nil {
+		s.fail(w, err)
+		return
+	}
+	if d.Sum, err = s.summary(ctx, sc, d.Period, d.Now); err != nil {
 		s.fail(w, err)
 		return
 	}
 	cutoff := d.Now.Add(-s.StuckThreshold)
-	if d.Active, err = s.Store.Feed(ctx, store.FeedFilter{Scope: v.Scope, Status: store.StatusActive, ShowBots: true, Limit: 12}, cutoff); err != nil {
+	if d.Active, err = s.Store.Feed(ctx, store.FeedFilter{Scope: sc, Status: store.StatusActive, ShowBots: true, Limit: 12}, cutoff); err != nil {
 		s.fail(w, err)
 		return
 	}
-	if d.Recent, err = s.Store.Feed(ctx, store.FeedFilter{Scope: v.Scope, ShowBots: true, Limit: 10}, cutoff); err != nil {
+	if d.Recent, err = s.Store.Feed(ctx, store.FeedFilter{Scope: sc, ShowBots: true, Limit: 10}, cutoff); err != nil {
 		s.fail(w, err)
 		return
 	}
 	d.Costs = costInfo{AsOf: s.Costs.AsOf, Partial: d.Sum.CostsPartial}
-	if isHTMX(r) && r.Header.Get("HX-Target") == "dash" {
+	if htmx {
+		w.Header().Set("HX-Replace-Url", dashURL(filter))
 		s.render(w, r, dashBody(d))
 		return
 	}

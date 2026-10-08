@@ -33,10 +33,12 @@
     if (app && app.classList.contains("menu-open") && !e.target.closest(".sidebar")) {
       app.classList.remove("menu-open");
     }
-    // Close the user menu when clicking elsewhere.
-    document.querySelectorAll("details.user-menu[open]").forEach(function (d) {
-      if (!d.contains(e.target)) d.open = false;
-    });
+    // Close the user menu and filter pickers when clicking elsewhere.
+    document
+      .querySelectorAll("details.user-menu[open], details.picker[open]")
+      .forEach(function (d) {
+        if (!d.contains(e.target)) d.open = false;
+      });
   });
 
   // Period selector: remembered in a cookie the server reads.
@@ -46,6 +48,33 @@
     var url = new URL(location.href);
     url.searchParams.delete("period");
     location.href = url.toString();
+  });
+
+  // Dashboard filter pickers: the server applies the filter; this keeps the labels in step.
+  document.addEventListener("change", function (e) {
+    var picker = e.target.closest("[data-picker]");
+    if (!picker || e.target.type !== "checkbox") return;
+    var picked = Array.prototype.map.call(picker.querySelectorAll("input:checked"), function (i) {
+      return i.value;
+    });
+    picker.querySelector("[data-picker-value]").textContent =
+      picked.length === 0 ? "All" : picked.length === 1 ? picked[0] : picked.length + " selected";
+    var form = picker.closest("form");
+    var clear = form && form.querySelector("[data-clear]");
+    if (clear) clear.hidden = !form.querySelector("[data-picker] input:checked");
+  });
+  document.addEventListener("input", function (e) {
+    if (!e.target.matches("[data-picker-search]")) return;
+    var needle = e.target.value.trim().toLowerCase();
+    e.target
+      .closest("[data-picker]")
+      .querySelectorAll(".picker-list .chk")
+      .forEach(function (row) {
+        row.hidden = needle !== "" && row.textContent.toLowerCase().indexOf(needle) < 0;
+      });
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && e.target.matches("[data-picker-search]")) e.preventDefault();
   });
 
   // Copy buttons

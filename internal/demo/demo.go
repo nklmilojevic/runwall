@@ -94,13 +94,14 @@ func Seed(ctx context.Context, st *store.Store, now time.Time) error {
 
 	descriptions := []string{"Public REST API and background workers", "Customer-facing web app", "Flux manifests for the clusters",
 		"Go SDK for the public API", "Command-line client", "Machine and editor configuration"}
+	topics := [][]string{{"backend", "go"}, {"frontend"}, {"infra", "flux"}, {"go", "sdk"}, {"go", "cli"}, {"nix"}}
 	for ri, r := range repos {
 		inst := int64(100 + ri/2)
 		if err := st.UpsertInstallation(ctx, store.Installation{ID: inst, Account: r.owner, AccountType: "Organization"}); err != nil {
 			return err
 		}
 		if err := st.UpsertRepo(ctx, store.Repo{ID: int64(ri + 1), InstallationID: inst, Owner: r.owner, Name: r.name,
-			FullName: r.owner + "/" + r.name, DefaultBranch: "main", Private: ri%2 == 0, Description: descriptions[ri],
+			FullName: r.owner + "/" + r.name, DefaultBranch: "main", Private: ri%2 == 0, Description: descriptions[ri], Topics: topics[ri],
 			PushedAt: now.Add(-time.Duration(ri*9) * 24 * time.Hour), OpenIssues: ri * 7}); err != nil {
 			return err
 		}

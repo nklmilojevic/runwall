@@ -127,6 +127,7 @@ func RepoFromGitHub(r *github.Repository, installationID int64) store.Repo {
 		Private:        r.GetPrivate(),
 		Description:    r.GetDescription(),
 		OpenIssues:     r.GetOpenIssuesCount(),
+		Topics:         r.Topics,
 		PushedAt:       ts(r.PushedAt),
 	}
 }
