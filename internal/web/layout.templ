@@ -1,0 +1,311 @@
+package web
+
+import (
+	"net/url"
+
+	"github.com/nklmilojevic/runwall/internal/metrics"
+)
+
+func csrfHeaders(sh shell) string {
+	if sh.V == nil {
+		return "{}"
+	}
+	return `{"X-CSRF-Token": "` + sh.V.CSRF + `"}`
+}
+
+func scopeLabel(sh shell) string {
+	switch {
+	case sh.Demo:
+		return "Demo data"
+	case sh.V != nil && sh.V.Kiosk != nil:
+		return "Kiosk · " + sh.V.Kiosk.Name
+	}
+	return "Repositories you can access"
+}
+
+templ icon(name string) {
+	<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+		switch name {
+			case "dashboard":
+				<rect width="7" height="9" x="3" y="3" rx="1"></rect>
+				<rect width="7" height="5" x="14" y="3" rx="1"></rect>
+				<rect width="7" height="9" x="14" y="12" rx="1"></rect>
+				<rect width="7" height="5" x="3" y="16" rx="1"></rect>
+			case "runs":
+				<polygon points="6 3 20 12 6 21 6 3"></polygon>
+			case "workflow":
+				<rect width="8" height="8" x="3" y="3" rx="2"></rect>
+				<path d="M7 11v4a2 2 0 0 0 2 2h4"></path>
+				<rect width="8" height="8" x="13" y="13" rx="2"></rect>
+			case "repo":
+				<path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"></path>
+			case "settings":
+				<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"></path>
+				<circle cx="16" cy="6" r="2"></circle>
+				<circle cx="10" cy="12" r="2"></circle>
+				<circle cx="18" cy="18" r="2"></circle>
+			case "sync":
+				<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
+				<path d="M21 3v5h-5"></path>
+				<path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path>
+				<path d="M8 16H3v5"></path>
+			case "moon":
+				<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
+			case "sun":
+				<circle cx="12" cy="12" r="4"></circle>
+				<path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
+			case "clock":
+				<circle cx="12" cy="12" r="10"></circle>
+				<path d="M12 6v6l4 2"></path>
+			case "timer":
+				<path d="M10 2h4M12 14l3-3"></path>
+				<circle cx="12" cy="14" r="8"></circle>
+			case "branch":
+				<line x1="6" x2="6" y1="3" y2="15"></line>
+				<circle cx="18" cy="6" r="3"></circle>
+				<circle cx="6" cy="18" r="3"></circle>
+				<path d="M18 9a9 9 0 0 1-9 9"></path>
+			case "commit":
+				<circle cx="12" cy="12" r="3"></circle>
+				<path d="M3 12h6M15 12h6"></path>
+			case "zap":
+				<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"></path>
+			case "dollar":
+				<path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+			case "external":
+				<path d="M15 3h6v6M10 14 21 3M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"></path>
+			case "logout":
+				<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"></path>
+			case "login":
+				<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3"></path>
+			case "menu":
+				<path d="M4 6h16M4 12h16M4 18h16"></path>
+			case "collapse":
+				<path d="m11 17-5-5 5-5M18 17l-5-5 5-5"></path>
+			case "rerun":
+				<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+				<path d="M3 3v5h5"></path>
+			case "cancel":
+				<circle cx="12" cy="12" r="10"></circle>
+				<path d="m15 9-6 6M9 9l6 6"></path>
+			case "lock":
+				<rect width="18" height="11" x="3" y="11" rx="2"></rect>
+				<path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+			case "award":
+				<circle cx="12" cy="8" r="6"></circle>
+				<path d="M15.48 12.89 17 22l-5-3-5 3 1.52-9.11"></path>
+			case "tv":
+				<rect width="20" height="15" x="2" y="7" rx="2"></rect>
+				<path d="m17 2-5 5-5-5"></path>
+			case "key":
+				<circle cx="7.5" cy="15.5" r="5.5"></circle>
+				<path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"></path>
+			case "user":
+				<circle cx="12" cy="8" r="4"></circle>
+				<path d="M4 21a8 8 0 0 1 16 0"></path>
+			case "file":
+				<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+				<path d="M14 2v6h6"></path>
+			case "alert":
+				<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path>
+				<path d="M12 9v4M12 17h.01"></path>
+		}
+	</svg>
+}
+
+templ head(title string) {
+	<meta charset="utf-8"/>
+	<meta name="viewport" content="width=device-width, initial-scale=1"/>
+	<title>{ title } · Runwall</title>
+	<script src={ asset("theme.js") }></script>
+	<link rel="stylesheet" href={ asset("app.css") }/>
+	<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='6' width='3' height='9' fill='%23a6e3a1'/%3E%3Crect x='6' y='2' width='3' height='13' fill='%23f38ba8'/%3E%3Crect x='11' y='9' width='3' height='6' fill='%23f9e2af'/%3E%3C/svg%3E"/>
+	<script src={ asset("htmx.min.js") } defer></script>
+	<script src={ asset("sse.js") } defer></script>
+	<script src={ asset("chart.umd.min.js") } defer></script>
+	<script src={ asset("app.js") } defer></script>
+}
+
+templ brandMark() {
+	<span class="mark" aria-hidden="true"><i></i><i></i><i></i></span>
+}
+
+templ navLink(sh shell, key, href, label string) {
+	<a class={ "nav-link", templ.KV("active", sh.Active == key) } href={ templ.URL(href) } title={ label }>
+		@icon(key)
+		<span>{ label }</span>
+	</a>
+}
+
+templ layout(sh shell) {
+	<!DOCTYPE html>
+	<html lang="en" data-theme="dark">
+		<head>
+			@head(sh.Title)
+		</head>
+		<body hx-headers={ csrfHeaders(sh) }>
+			<div class="app" id="app">
+				<aside class="sidebar" id="sidebar">
+					<a class="brand" href="/">
+						@brandMark()
+						<span class="brand-text">
+							<b>Runwall</b>
+							<small>CI/CD dashboard</small>
+						</span>
+					</a>
+					<nav class="nav" aria-label="Main">
+						@navLink(sh, "dashboard", "/", "Dashboard")
+						@navLink(sh, "runs", "/runs", "Runs")
+						@navLink(sh, "workflow", "/workflows", "Workflows")
+						@navLink(sh, "repo", "/repos", "Repositories")
+						if sh.V.Kiosk == nil {
+							@navLink(sh, "settings", "/settings", "Settings")
+						}
+					</nav>
+					<div class="side-foot">
+						<button type="button" class="nav-link collapse" data-collapse title="Collapse sidebar">
+							@icon("collapse")
+							<span>Collapse</span>
+						</button>
+						<small class="scope">{ scopeLabel(sh) }</small>
+					</div>
+				</aside>
+				<div class="main">
+					<header class="topbar">
+						<button type="button" class="icon-btn menu-btn" data-menu aria-label="Open menu">
+							@icon("menu")
+						</button>
+						<span class="live" id="live" title="Live updates">
+							<span class="live-dot" aria-hidden="true"></span>
+							<span class="live-text">Connecting</span>
+						</span>
+						<span class="spacer"></span>
+						<label class="period">
+							<span class="sr">Period</span>
+							<select data-period>
+								for _, p := range metrics.Periods {
+									<option value={ p.Key } selected?={ p.Key == sh.Period.Key }>{ p.Label }</option>
+								}
+							</select>
+						</label>
+						<button type="button" class="icon-btn" data-theme-toggle aria-label="Switch theme">
+							<span class="when-dark">
+								@icon("sun")
+							</span>
+							<span class="when-light">
+								@icon("moon")
+							</span>
+						</button>
+						if sh.V.Kiosk == nil {
+							<button type="button" class="btn" hx-post="/sync" hx-swap="none">
+								@icon("sync")
+								<span>Sync</span>
+							</button>
+						}
+						if sh.V.User.ID != 0 {
+							<details class="user-menu">
+								<summary>
+									if sh.V.User.AvatarURL != "" {
+										<img src={ sh.V.User.AvatarURL } alt="" width="26" height="26"/>
+									} else {
+										<span class="avatar">
+											@icon("user")
+										</span>
+									}
+									<span class="user-login">{ sh.V.User.Login }</span>
+								</summary>
+								<div class="menu">
+									<a href="/settings">
+										@icon("key")
+										Settings and API tokens
+									</a>
+									if !sh.Demo {
+										<form method="post" action="/auth/logout">
+											<button type="submit">
+												@icon("logout")
+												Sign out
+											</button>
+										</form>
+									}
+								</div>
+							</details>
+						}
+					</header>
+					<main class="content" hx-ext="sse" sse-connect="/events">
+						{ children... }
+					</main>
+					@syncStatus(sh)
+				</div>
+			</div>
+			<div class="toasts" id="toasts" aria-live="polite"></div>
+		</body>
+	</html>
+}
+
+templ pageHead(title, sub string) {
+	<div class="page-head">
+		<h1>{ title }</h1>
+		if sub != "" {
+			<p>{ sub }</p>
+		}
+	</div>
+}
+
+templ syncStatus(sh shell) {
+	<footer class="sync">
+		if sh.LastSync.IsZero() {
+			<span>Syncing with GitHub…</span>
+		} else if sh.SyncErr != nil {
+			<span class="sync-err" title={ sh.SyncErr.Error() }>Last sync { ago(sh.LastSync, sh.Now) } had errors. Some runs may be missing; see the server log.</span>
+		} else {
+			<span>Synced with GitHub { ago(sh.LastSync, sh.Now) }. Live updates arrive by webhook.</span>
+		}
+		if sh.HasRate {
+			<span class={ "budget", templ.KV("budget-low", !sh.Budget.Healthy(0.2)) } title="GitHub API requests left this hour for the App installation with the least remaining. Below 20%, cost backfill and grading pause.">
+				API budget { thousands(sh.Budget.Remaining) } / { thousands(sh.Budget.Limit) } · resets { sh.Budget.Reset.Local().Format("15:04") }
+			</span>
+		}
+	</footer>
+}
+
+templ loginPage(next, errMsg string, configured bool) {
+	<!DOCTYPE html>
+	<html lang="en" data-theme="dark">
+		<head>
+			@head("Sign in")
+		</head>
+		<body class="login-body">
+			<main class="login">
+				<div class="login-card">
+					<div class="brand">
+						@brandMark()
+						<span class="brand-text">
+							<b>Runwall</b>
+							<small>CI/CD dashboard</small>
+						</span>
+					</div>
+					<p>Workflow runs, trends and costs for the repositories you can access on GitHub.</p>
+					if errMsg != "" {
+						<p class="login-error" role="alert">{ errMsg }</p>
+					}
+					if configured {
+						<a class="btn btn-primary" href={ templ.URL("/auth/start?next=" + url.QueryEscape(next)) }>
+							@icon("login")
+							Sign in with GitHub
+						</a>
+					} else {
+						<p class="note">Sign-in isn't configured. Set GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET and SESSION_KEY, then restart.</p>
+					}
+				</div>
+			</main>
+		</body>
+	</html>
+}
+
+templ noteText(msg string) {
+	<p class="note">{ msg }</p>
+}
+
+templ codeBlock(content string) {
+	<pre class="code">{ content }</pre>
+}

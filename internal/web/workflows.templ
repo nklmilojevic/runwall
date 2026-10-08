@@ -1,0 +1,118 @@
+package web
+
+import (
+	"strconv"
+
+	"github.com/nklmilojevic/runwall/internal/metrics"
+)
+
+func lastState(w *metrics.Workflow) state {
+	return statusState(w.Last.Status, w.Last.Conclusion)
+}
+
+func defaultState(w *metrics.Workflow) state {
+	if w.LastDefault == nil {
+		return ""
+	}
+	return statusState(w.LastDefault.Status, w.LastDefault.Conclusion)
+}
+
+templ rateBar(rate float64) {
+	<span class={ "rate", rateClass(rate) }>
+		<span class="rate-track"><span class="rate-fill" style={ templ.SafeCSS("width:" + strconv.Itoa(int(max(rate, 0)*100)) + "%") }></span></span>
+		<span class="rate-num">{ pct(rate) }</span>
+	</span>
+}
+
+templ workflowsPage(wv workflowsView) {
+	@layout(wv.shell) {
+		@pageHead("Workflows", wv.Period.Label+" · "+plural(len(wv.Sum.Workflows), "workflow", "workflows")+" with runs")
+		<div class="card table-card">
+			if len(wv.Sum.Workflows) == 0 {
+				<p class="note pad">No workflow ran in this period. Pick a longer period above, or check back after the next push.</p>
+			} else {
+				<table class="table">
+					<thead>
+						<tr>
+							<th>Workflow</th>
+							<th>Last run</th>
+							<th>Default branch</th>
+							<th class="num">Runs</th>
+							<th>Success rate</th>
+							<th class="num">Avg</th>
+							<th class="num">p95</th>
+							<th class="num">Est. cost</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, w := range wv.Sum.Workflows {
+							<tr>
+								<td>
+									<a class="cell-main" href={ templ.URL(workflowHref(w)) }>
+										<b>{ w.Name }</b>
+										<small>{ w.Repo }</small>
+									</a>
+								</td>
+								<td>
+									<a class={ "status", "s-" + string(lastState(w)) } href={ templ.URL(runHref(w.Last.ID)) }>
+										<span aria-hidden="true">{ lastState(w).glyph() }</span>
+										{ lastState(w).label() }
+									</a>
+								</td>
+								<td>
+									if w.LastDefault != nil {
+										<span class={ "status", "s-" + string(defaultState(w)) }>
+											<span aria-hidden="true">{ defaultState(w).glyph() }</span>
+											{ defaultState(w).label() }
+										</span>
+									} else {
+										<span class="muted">–</span>
+									}
+								</td>
+								<td class="num">{ strconv.Itoa(w.Counts.Runs) }</td>
+								<td>
+									@rateBar(w.Counts.SuccessRate())
+								</td>
+								<td class="num mono">{ fmtDuration(w.Durations.Avg()) }</td>
+								<td class="num mono">{ fmtDuration(w.Durations.P95()) }</td>
+								<td class="num mono">{ money(w.Cost.USD) }</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+		</div>
+		<p class="footnote">Success rate counts succeeded and failed runs; cancelled and skipped runs are left out. Costs are list-price estimates as of { wv.Costs.AsOf }.</p>
+	}
+}
+
+templ workflowDetailPage(wv workflowView) {
+	@layout(wv.shell) {
+		<nav class="crumbs" aria-label="Breadcrumb">
+			<a href="/workflows">Workflows</a>
+			<span>/</span>
+			<a href={ templ.URL(repoHref(wv.Flow.Key.RepoID)) }>{ wv.Flow.Repo }</a>
+		</nav>
+		@pageHead(wv.Flow.Name, wv.Flow.Path+" · "+wv.Period.Label)
+		<section class="kpis">
+			@kpi("runs", "blue", "Runs", strconv.Itoa(wv.Flow.Counts.Runs), strconv.Itoa(wv.Flow.Counts.Success)+" succeeded, "+strconv.Itoa(wv.Flow.Counts.Failure)+" failed")
+			@kpi("award", "green", "Success rate", pct(wv.Flow.Counts.SuccessRate()), "succeeded vs failed")
+			@kpi("timer", "teal", "Average duration", fmtDuration(wv.Flow.Durations.Avg()), "p95 "+fmtDuration(wv.Flow.Durations.P95()))
+			@kpi("dollar", "mauve", "Estimated cost", money(wv.Flow.Cost.USD), strconv.Itoa(wv.Flow.Cost.Minutes)+" billable minutes")
+		</section>
+		<section class="charts">
+			<div class="card chart-card">
+				<h2 class="card-title">Run trends</h2>
+				<div class="chart-box"><canvas data-chart={ trendChart(wv.Sum) } role="img" aria-label="Succeeded and failed runs over time"></canvas></div>
+			</div>
+			<div class="card chart-card">
+				<h2 class="card-title">Duration of recent runs</h2>
+				<div class="chart-box"><canvas data-chart={ durationChart(wv.Runs, wv.Now) } role="img" aria-label="Minutes per run"></canvas></div>
+			</div>
+		</section>
+		<section class="card">
+			<h2 class="card-title">Runs</h2>
+			@recentList(wv.Runs, wv.Now)
+		</section>
+	}
+}

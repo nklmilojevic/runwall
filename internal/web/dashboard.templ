@@ -1,0 +1,135 @@
+package web
+
+import (
+	"strconv"
+	"time"
+
+	"github.com/nklmilojevic/runwall/internal/store"
+)
+
+templ dashboardPage(d dashView) {
+	@layout(d.shell) {
+		@pageHead("Dashboard", d.Period.Label+" · "+scopeLabel(d.shell))
+		<div id="dash" hx-get="/" hx-trigger="sse:update throttle:3s, every 60s">
+			@dashBody(d)
+		</div>
+	}
+}
+
+templ kpi(ico, tone, label, value, sub string) {
+	<div class={ "kpi", "tone-" + tone }>
+		<div class="kpi-text">
+			<span class="kpi-label">{ label }</span>
+			<b class="kpi-value">{ value }</b>
+			<span class="kpi-sub">{ sub }</span>
+		</div>
+		<span class="kpi-ico">
+			@icon(ico)
+		</span>
+	</div>
+}
+
+templ dashBody(d dashView) {
+	<section class="kpis">
+		@kpi("workflow", "green", "Active workflows", strconv.Itoa(d.Sum.ActiveFlows), "across "+plural(len(d.Sum.Repos), "repository", "repositories"))
+		@kpi("runs", "blue", "Runs", strconv.Itoa(d.Sum.Counts.Runs), strconv.Itoa(d.Sum.Counts.Success)+" succeeded, "+strconv.Itoa(d.Sum.Counts.Failure)+" failed")
+		@kpi("clock", "yellow", "Pending", strconv.Itoa(d.Sum.Counts.Running+d.Sum.Counts.Queued), strconv.Itoa(d.Sum.Counts.Running)+" running, "+strconv.Itoa(d.Sum.Counts.Queued)+" queued")
+		@kpi("timer", "teal", "Pipeline time", shortDur(d.Sum.Durations.Sum()), plural(len(d.Sum.Durations), "run completed", "runs completed"))
+		@kpi("dollar", "mauve", "Estimated cost", money(d.Sum.Cost.USD), strconv.Itoa(d.Sum.Cost.Minutes)+" billable minutes")
+	</section>
+	<section class="section">
+		<h2 class="section-title">
+			@icon("zap")
+			Active pipelines
+			<span class="muted">({ strconv.Itoa(len(d.Active)) } running or queued)</span>
+		</h2>
+		if len(d.Active) == 0 {
+			<div class="card empty-inline">Nothing is running right now. New runs appear here the moment GitHub starts them.</div>
+		} else {
+			<div class="pipelines">
+				for _, r := range d.Active {
+					@pipelineCard(r, d)
+				}
+			</div>
+		}
+	</section>
+	<section class="charts">
+		<div class="card chart-card">
+			<h2 class="card-title">Run trends</h2>
+			<div class="chart-box"><canvas data-chart={ trendChart(d.Sum) } aria-label="Succeeded and failed runs over time" role="img"></canvas></div>
+		</div>
+		<div class="card chart-card">
+			<h2 class="card-title">Run distribution</h2>
+			<div class="chart-box chart-box-donut"><canvas data-chart={ distributionChart(d.Sum.Counts) } aria-label="Share of succeeded, failed and other runs" role="img"></canvas></div>
+			<p class="chart-foot">Success rate <b class={ rateClass(d.Sum.Counts.SuccessRate()) }>{ pct(d.Sum.Counts.SuccessRate()) }</b></p>
+		</div>
+	</section>
+	<section class="card">
+		<div class="card-head">
+			<h2 class="card-title">Recent runs</h2>
+			<a class="link" href="/runs">View all</a>
+		</div>
+		@recentList(d.Recent, d.Now)
+	</section>
+	if d.Costs.Partial {
+		<p class="footnote">Costs are estimated from GitHub list prices as of { d.Costs.AsOf }. Some older runs are still having their jobs loaded, so totals may rise slightly.</p>
+	} else {
+		<p class="footnote">Costs are estimated from GitHub list prices as of { d.Costs.AsOf }; plan allowances aren't subtracted.</p>
+	}
+}
+
+templ pipelineCard(r store.FeedRun, d dashView) {
+	<a class={ "pcard", "s-" + string(runState(r)) } href={ templ.URL(runHref(r.ID)) }>
+		<div class="pcard-head">
+			<span class="status-ico" aria-hidden="true"></span>
+			<div class="pcard-title">
+				<b>{ headline(r) }</b>
+				<small>{ r.Owner }/{ r.RepoName } · { r.WorkflowName }</small>
+			</div>
+		</div>
+		<ul class="pcard-meta">
+			<li>
+				@icon("branch")
+				{ branchLabel(r) }
+			</li>
+			<li>
+				@icon("commit")
+				<span class="mono">{ shortSHA(r.HeadSHA) }</span>
+			</li>
+			<li>
+				@icon("user")
+				{ r.ActorLogin }
+				<span class="push">{ runTiming(r, d.Now) }</span>
+			</li>
+		</ul>
+		<span class="pill">{ runState(r).label() }</span>
+		<span class="stripe" aria-hidden="true"></span>
+	</a>
+}
+
+templ recentList(runs []store.FeedRun, now time.Time) {
+	if len(runs) == 0 {
+		<p class="note pad">No runs yet in this period.</p>
+	} else {
+		<ul class="recent">
+			for _, r := range runs {
+				<li>
+					<a class={ "recent-row", "s-" + string(runState(r)) } href={ templ.URL(runHref(r.ID)) }>
+						<span class="status-dot" title={ runState(r).label() }>
+							<span aria-hidden="true">{ runState(r).glyph() }</span>
+							<span class="sr">{ runState(r).label() }</span>
+						</span>
+						<span class="recent-main">
+							<b>{ headline(r) }<span class="muted"> #{ strconv.Itoa(r.RunNumber) }</span></b>
+							<small>{ r.Owner }/{ r.RepoName } · { r.WorkflowName } · { branchLabel(r) }</small>
+						</span>
+						<span class="recent-time">
+							<b>{ runTiming(r, now) }</b>
+							<small>{ ago(r.QueuedSince(), now) }</small>
+						</span>
+					</a>
+				</li>
+			}
+		</ul>
+	}
+}

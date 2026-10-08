@@ -1,0 +1,91 @@
+package web
+
+import (
+	"strconv"
+
+	"github.com/nklmilojevic/runwall/internal/store"
+)
+
+func runIDStr(r store.FeedRun) string { return strconv.FormatInt(r.ID, 10) }
+
+func runFailed(r store.FeedRun) bool {
+	return r.Status == "completed" && (r.Conclusion == "failure" || r.Conclusion == "timed_out" || r.Conclusion == "startup_failure" || r.Conclusion == "cancelled")
+}
+
+templ runDetailPage(rv runView) {
+	@layout(rv.shell) {
+		<nav class="crumbs" aria-label="Breadcrumb">
+			<a href="/runs">Runs</a>
+			<span>/</span>
+			<a href={ templ.URL(repoHref(rv.Repo.ID)) }>{ rv.Repo.FullName }</a>
+			<span>/</span>
+			<a href={ templ.URL("/workflows/" + strconv.FormatInt(rv.Repo.ID, 10) + "/" + strconv.FormatInt(rv.Run.WorkflowID, 10)) }>{ rv.Run.WorkflowName }</a>
+		</nav>
+		<div id="run-detail" hx-get={ "/runs/" + runIDStr(rv.Run) } hx-trigger={ "sse:update[detail.data=='" + runIDStr(rv.Run) + "'] throttle:1s, every 30s" }>
+			@runDetailBody(rv)
+		</div>
+		<details class="card workflow-file" hx-get={ "/runs/" + runIDStr(rv.Run) + "/workflow-file" } hx-trigger="toggle once" hx-target="find .wf-body">
+			<summary>
+				@icon("file")
+				Workflow file
+				<span class="mono muted">{ rv.Run.WorkflowPath }</span>
+			</summary>
+			<div class="wf-body"><p class="note">Loading…</p></div>
+		</details>
+	}
+}
+
+templ runDetailBody(rv runView) {
+	<section class={ "run-head", "card", "s-" + string(runState(rv.Run)) }>
+		<div class="run-title">
+			<span class="pill">{ runState(rv.Run).label() }</span>
+			<h1>{ headline(rv.Run) }</h1>
+			<p class="muted">{ rv.Run.WorkflowName } #{ strconv.Itoa(rv.Run.RunNumber) }
+				if rv.Run.RunAttempt > 1 {
+					· attempt { strconv.Itoa(rv.Run.RunAttempt) }
+				}
+			</p>
+		</div>
+		<dl class="facts">
+			<div><dt>Repository</dt><dd><a href={ templ.URL(repoHref(rv.Repo.ID)) }>{ rv.Repo.FullName }</a></dd></div>
+			<div><dt>Branch</dt><dd class="mono">{ branchLabel(rv.Run) }</dd></div>
+			<div><dt>Commit</dt><dd class="mono">{ shortSHA(rv.Run.HeadSHA) }</dd></div>
+			<div><dt>Triggered by</dt><dd>{ rv.Run.ActorLogin } · { rv.Run.Event }</dd></div>
+			<div><dt>Started</dt><dd>{ ago(rv.Run.QueuedSince(), rv.Now) }</dd></div>
+			<div><dt>Duration</dt><dd class="mono">{ runTiming(rv.Run, rv.Now) }</dd></div>
+		</dl>
+		<div class="run-actions">
+			if rv.CanAct {
+				if runFailed(rv.Run) {
+					<button type="button" class="btn btn-primary" hx-post={ "/runs/" + runIDStr(rv.Run) + "/rerun-failed" } hx-swap="none" hx-confirm="Re-run the failed jobs of this run?">
+						@icon("rerun")
+						Re-run failed jobs
+					</button>
+				}
+				if rv.Run.Status == "completed" {
+					<button type="button" class="btn" hx-post={ "/runs/" + runIDStr(rv.Run) + "/rerun" } hx-swap="none" hx-confirm="Re-run every job in this run?">
+						@icon("rerun")
+						Re-run all jobs
+					</button>
+				} else {
+					<button type="button" class="btn btn-danger" hx-post={ "/runs/" + runIDStr(rv.Run) + "/cancel" } hx-swap="none" hx-confirm="Cancel this run? Jobs in progress will be stopped.">
+						@icon("cancel")
+						Cancel run
+					</button>
+				}
+			} else if rv.V.Kiosk == nil {
+				<span class="muted small">Re-run and cancel need write access to { rv.Repo.FullName }.</span>
+			}
+			<a class="btn" href={ templ.URL(rv.Run.HTMLURL) } target="_blank" rel="noopener">
+				@icon("external")
+				Open on GitHub
+			</a>
+		</div>
+	</section>
+	<section class="card">
+		<h2 class="card-title">Jobs</h2>
+		<div class="jobs jobs-detail">
+			@jobList(rv.Jobs, rv.Now, rv.Threshold, "", rv.JobsErr, rv.CanAct)
+		</div>
+	</section>
+}

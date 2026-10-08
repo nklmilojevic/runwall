@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runwall
+spec:
+  # SQLite on a ReadWriteOnce volume: exactly one replica, never two at once.
+  replicas: 1
+  strategy:
+    type: Recreate
+  template:
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: dashboard
+          image: runwall
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - { name: LISTEN_ADDR, value: ":8080" }
+            - { name: DB_PATH, value: /data/runwall.db }
+            - { name: NOTIFIER, value: log }
+          envFrom:
+            - configMapRef: { name: runwall }
+            - secretRef: { name: runwall }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 10m, memory: 48Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: runwall-data

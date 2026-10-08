@@ -1,0 +1,204 @@
+package web
+
+import (
+	"strconv"
+
+	"github.com/nklmilojevic/runwall/internal/metrics"
+	"github.com/nklmilojevic/runwall/internal/scoring"
+	"github.com/nklmilojevic/runwall/internal/store"
+)
+
+func cardRate(c repoCard) float64 {
+	if c.Stats == nil {
+		return -1
+	}
+	return c.Stats.Counts.SuccessRate()
+}
+
+func cardFlows(c repoCard) []*metrics.Workflow {
+	if c.Stats == nil {
+		return nil
+	}
+	return c.Stats.Workflows
+}
+
+templ tierBadge(sc *store.RepoScore) {
+	if sc != nil {
+		<span class={ "tier", "tier-" + sc.Tier } title={ "Grade " + strconv.Itoa(sc.Score) + "/100" }>
+			@icon("award")
+			{ tierTitle(sc.Tier) }
+			<span class="tier-score">{ strconv.Itoa(sc.Score) }</span>
+		</span>
+	} else {
+		<span class="tier tier-pending" title="Grades are computed once a day">Not graded yet</span>
+	}
+}
+
+templ reposPage(rv reposView) {
+	@layout(rv.shell) {
+		@pageHead("Repositories", plural(len(rv.Cards), "repository", "repositories")+" · "+rv.Period.Label)
+		if len(rv.Cards) == 0 {
+			<div class="card empty-inline">No repositories yet. Install the GitHub App on an account, and its repositories appear here after the next sync.</div>
+		}
+		<div class="repo-grid">
+			for _, c := range rv.Cards {
+				<a class="card repo-card" href={ templ.URL(repoHref(c.Repo.ID)) }>
+					<div class="repo-card-head">
+						<div>
+							<small>{ c.Repo.Owner }</small>
+							<b>
+								{ c.Repo.Name }
+								if c.Repo.Private {
+									<span class="lock" title="Private">
+										@icon("lock")
+									</span>
+								}
+							</b>
+						</div>
+						@tierBadge(c.Score)
+					</div>
+					if c.Repo.Description != "" {
+						<p class="repo-desc">{ c.Repo.Description }</p>
+					}
+					<div class="repo-flows">
+						for _, w := range cardFlows(c) {
+							<span class={ "flow-dot", "s-" + string(defaultState(w)) } title={ w.Name + ": " + defaultState(w).label() }></span>
+						}
+					</div>
+					<div class="repo-stats">
+						@rateBar(cardRate(c))
+						if c.Stats != nil {
+							<span>{ plural(c.Stats.Counts.Runs, "run", "runs") }</span>
+							<span class="mono">{ money(c.Stats.Cost.USD) }</span>
+						} else {
+							<span class="muted">No runs in period</span>
+						}
+					</div>
+				</a>
+			}
+		</div>
+		<p class="footnote">Dots show each workflow's latest default-branch result. Grades follow Snorlx's weights: security 25%, testing 20%, CI/CD 15%, docs 15%, code quality 10%, maintenance 10%, community 5%.</p>
+	}
+}
+
+templ repoDetailPage(rv repoView) {
+	@layout(rv.shell) {
+		<nav class="crumbs" aria-label="Breadcrumb">
+			<a href="/repos">Repositories</a>
+			<span>/</span>
+			<span>{ rv.Card.Repo.Owner }</span>
+		</nav>
+		<div class="page-head page-head-row">
+			<div>
+				<h1>
+					{ rv.Card.Repo.Name }
+					if rv.Card.Repo.Private {
+						<span class="lock" title="Private">
+							@icon("lock")
+						</span>
+					}
+				</h1>
+				<p>{ rv.Card.Repo.Description }</p>
+			</div>
+			<div class="head-actions">
+				@tierBadge(rv.Card.Score)
+				if rv.V.Kiosk == nil {
+					<button type="button" class="btn" hx-post={ "/repos/" + strconv.FormatInt(rv.Card.Repo.ID, 10) + "/score" } hx-swap="none">
+						@icon("sync")
+						Refresh grade
+					</button>
+				}
+				<a class="btn" href={ templ.URL("https://github.com/" + rv.Card.Repo.FullName) } target="_blank" rel="noopener">
+					@icon("external")
+					GitHub
+				</a>
+			</div>
+		</div>
+		if rv.Card.Stats != nil {
+			<section class="kpis">
+				@kpi("runs", "blue", "Runs", strconv.Itoa(rv.Card.Stats.Counts.Runs), rv.Period.Label)
+				@kpi("award", "green", "Success rate", pct(rv.Card.Stats.Counts.SuccessRate()), strconv.Itoa(rv.Card.Stats.Counts.Failure)+" failed")
+				@kpi("timer", "teal", "Pipeline time", shortDur(rv.Card.Stats.Durations.Sum()), "p95 run "+fmtDuration(rv.Card.Stats.Durations.P95()))
+				@kpi("dollar", "mauve", "Estimated cost", money(rv.Card.Stats.Cost.USD), strconv.Itoa(rv.Card.Stats.Cost.Minutes)+" billable minutes")
+			</section>
+		}
+		<div class="split">
+			<section class="card">
+				<div class="card-head">
+					<h2 class="card-title">Grade</h2>
+					if rv.Card.Score != nil {
+						<small class="muted">computed { ago(rv.Card.Score.ComputedAt, rv.Now) }</small>
+					}
+				</div>
+				if len(rv.Breakdown.Categories) == 0 {
+					<p class="note pad">This repository hasn't been graded yet. Grades are computed once a day, or now with Refresh grade.</p>
+				} else {
+					<div class="score-cats">
+						for _, c := range rv.Breakdown.Categories {
+							@scoreCategory(c)
+						}
+					</div>
+				}
+			</section>
+			<section class="card">
+				<h2 class="card-title">Workflows</h2>
+				if len(cardFlows(rv.Card)) == 0 {
+					<p class="note pad">No workflow ran in this period.</p>
+				} else {
+					<ul class="flow-list">
+						for _, w := range cardFlows(rv.Card) {
+							<li>
+								<a href={ templ.URL(workflowHref(w)) }>
+									<span class={ "status", "s-" + string(defaultState(w)) }><span aria-hidden="true">{ defaultState(w).glyph() }</span></span>
+									<b>{ w.Name }</b>
+									@rateBar(w.Counts.SuccessRate())
+									<span class="mono muted">{ fmtDuration(w.Durations.Avg()) }</span>
+								</a>
+							</li>
+						}
+					</ul>
+				}
+			</section>
+		</div>
+		<section class="card">
+			<h2 class="card-title">Recent runs</h2>
+			@recentList(rv.Runs, rv.Now)
+		</section>
+	}
+}
+
+templ scoreCategory(c scoring.Category) {
+	<div class={ "score-cat", templ.KV("unavailable", !c.Available) }>
+		<div class="score-cat-head">
+			<b>{ c.Name }</b>
+			<span class="muted">{ strconv.Itoa(int(c.Weight)) }%</span>
+			if c.Available {
+				<span class={ "score-num", rateClass(float64(c.Score) / 100) }>{ strconv.Itoa(c.Score) }</span>
+			} else {
+				<span class="score-num rate-none">–</span>
+			}
+		</div>
+		if c.Available {
+			<span class="rate-track"><span class={ "rate-fill", rateClass(float64(c.Score) / 100) } style={ templ.SafeCSS("width:" + strconv.Itoa(c.Score) + "%") }></span></span>
+		} else if c.Missing != "" {
+			<p class="note">Not checked: the App needs { c.Missing }.</p>
+		}
+		<ul class="checks">
+			for _, ch := range c.Checks {
+				<li class={ templ.KV("ok", ch.OK) }>
+					<span aria-hidden="true">
+						if ch.OK {
+							✓
+						} else {
+							✕
+						}
+					</span>
+					{ ch.Name }
+					if ch.Detail != "" {
+						<small>{ ch.Detail }</small>
+					}
+				</li>
+			}
+		</ul>
+	</div>
+}

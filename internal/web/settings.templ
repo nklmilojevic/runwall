@@ -1,0 +1,189 @@
+package web
+
+import (
+	"strconv"
+	"strings"
+)
+
+func mcpCommand(sv settingsView) string {
+	token := sv.NewToken
+	if token == "" {
+		token = "<token>"
+	}
+	return `claude mcp add --transport http runwall ` + sv.MCPURL + ` --header "Authorization: Bearer ` + token + `"`
+}
+
+templ csrfField(sh shell) {
+	<input type="hidden" name="csrf" value={ sh.V.CSRF }/>
+}
+
+templ settingsPage(sv settingsView) {
+	@layout(sv.shell) {
+		@pageHead("Settings", "")
+		<section class="card settings-card">
+			<h2 class="card-title">
+				@icon("user")
+				Account
+			</h2>
+			<div class="profile">
+				if sv.V.User.AvatarURL != "" {
+					<img src={ sv.V.User.AvatarURL } alt="" width="40" height="40"/>
+				}
+				<div>
+					<b>{ sv.V.User.Name }</b>
+					<small class="muted">{ "@" + sv.V.User.Login }
+						if sv.V.Admin {
+							· admin
+						}
+					</small>
+				</div>
+				if !sv.Demo {
+					<form method="post" action="/auth/logout" class="push">
+						<button type="submit" class="btn">
+							@icon("logout")
+							Sign out
+						</button>
+					</form>
+				}
+			</div>
+			<p class="note">You see the repositories your GitHub account can access. Access is re-checked every 10 minutes.</p>
+		</section>
+
+		<section class="card settings-card">
+			<h2 class="card-title">
+				@icon("key")
+				API tokens for MCP
+			</h2>
+			<p class="note">Tokens let AI agents such as Claude Code query runs, failures, logs, workflow stats and grades through the MCP endpoint. They see exactly what you see, and can't re-run or cancel anything.</p>
+			if sv.NewToken != "" {
+				<div class="reveal" role="status">
+					<p><b>Copy this token now.</b> It won't be shown again.</p>
+					<div class="copy-row">
+						<code id="new-token">{ sv.NewToken }</code>
+						<button type="button" class="btn" data-copy="#new-token">Copy</button>
+					</div>
+					<p>Add it to Claude Code:</p>
+					<div class="copy-row">
+						<code id="mcp-cmd">{ mcpCommand(sv) }</code>
+						<button type="button" class="btn" data-copy="#mcp-cmd">Copy</button>
+					</div>
+				</div>
+			}
+			<form method="post" action="/settings/tokens" class="inline-form">
+				@csrfField(sv.shell)
+				<label class="field">
+					<span>Token name</span>
+					<input type="text" name="name" placeholder="e.g. laptop" maxlength="60" required/>
+				</label>
+				<button type="submit" class="btn btn-primary">Create token</button>
+			</form>
+			if len(sv.Tokens) > 0 {
+				<table class="table">
+					<thead><tr><th>Name</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+					<tbody>
+						for _, t := range sv.Tokens {
+							<tr>
+								<td>{ t.Name }</td>
+								<td>{ ago(t.CreatedAt, sv.Now) }</td>
+								<td>
+									if t.LastUsedAt.IsZero() {
+										<span class="muted">never</span>
+									} else {
+										{ ago(t.LastUsedAt, sv.Now) }
+									}
+								</td>
+								<td class="num">
+									<form method="post" action={ templ.URL("/settings/tokens/" + strconv.FormatInt(t.ID, 10) + "/delete") } onsubmit="return confirm('Revoke this token? Agents using it will stop working.')">
+										@csrfField(sv.shell)
+										<button type="submit" class="btn btn-danger btn-sm">Revoke</button>
+									</form>
+								</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			}
+			<p class="note">MCP endpoint: <code>{ sv.MCPURL }</code></p>
+		</section>
+
+		if sv.V.Admin {
+			<section class="card settings-card">
+				<h2 class="card-title">
+					@icon("tv")
+					Kiosk links
+				</h2>
+				<p class="note">A kiosk link opens a read-only dashboard for a wall display, without signing in. It shows only the accounts you pick, and can't see settings, re-run or cancel.</p>
+				if sv.NewKioskURL != "" {
+					<div class="reveal" role="status">
+						<p><b>Copy this link now.</b> It won't be shown again.</p>
+						<div class="copy-row">
+							<code id="new-kiosk">{ sv.NewKioskURL }</code>
+							<button type="button" class="btn" data-copy="#new-kiosk">Copy</button>
+						</div>
+					</div>
+				}
+				<form method="post" action="/settings/kiosk" class="inline-form">
+					@csrfField(sv.shell)
+					<label class="field">
+						<span>Display name</span>
+						<input type="text" name="name" placeholder="e.g. Office TV" maxlength="60" required/>
+					</label>
+					<fieldset class="field">
+						<span>Accounts to show</span>
+						<div class="toggles">
+							for _, o := range sv.Owners {
+								<label class="chk"><input type="checkbox" name="owners" value={ o } checked/> { o }</label>
+							}
+						</div>
+					</fieldset>
+					<button type="submit" class="btn btn-primary">Create kiosk link</button>
+				</form>
+				if len(sv.Kiosks) > 0 {
+					<table class="table">
+						<thead><tr><th>Name</th><th>Accounts</th><th>Created</th><th></th></tr></thead>
+						<tbody>
+							for _, k := range sv.Kiosks {
+								<tr>
+									<td>{ k.Name }</td>
+									<td class="mono">{ strings.Join(k.Owners, ", ") }</td>
+									<td>{ ago(k.CreatedAt, sv.Now) } by { k.CreatedBy }</td>
+									<td class="num">
+										<form method="post" action={ templ.URL("/settings/kiosk/" + strconv.FormatInt(k.ID, 10) + "/delete") } onsubmit="return confirm('Revoke this kiosk link? Displays using it will be signed out.')">
+											@csrfField(sv.shell)
+											<button type="submit" class="btn btn-danger btn-sm">Revoke</button>
+										</form>
+									</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				}
+			</section>
+
+			<section class="card settings-card">
+				<h2 class="card-title">
+					@icon("rerun")
+					Recent run actions
+				</h2>
+				if len(sv.Audit) == 0 {
+					<p class="note">Nobody has re-run or cancelled anything from the dashboard yet.</p>
+				} else {
+					<table class="table">
+						<thead><tr><th>When</th><th>Who</th><th>Action</th><th>Repository</th><th>Result</th></tr></thead>
+						<tbody>
+							for _, a := range sv.Audit {
+								<tr>
+									<td>{ ago(a.At, sv.Now) }</td>
+									<td>{ a.Login }</td>
+									<td class="mono">{ a.Action } #{ strconv.FormatInt(a.Target, 10) }</td>
+									<td>{ a.Repo }</td>
+									<td class={ templ.KV("fail-text", a.Result != "ok") }>{ a.Result }</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				}
+			</section>
+		}
+	}
+}

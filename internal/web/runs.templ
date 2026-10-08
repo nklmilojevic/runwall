@@ -1,0 +1,345 @@
+package web
+
+import (
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/nklmilojevic/runwall/internal/joblog"
+	"github.com/nklmilojevic/runwall/internal/store"
+	"github.com/nklmilojevic/runwall/internal/syncer"
+)
+
+func oob(on bool) templ.Attributes {
+	if on {
+		return templ.Attributes{"hx-swap-oob": "true"}
+	}
+	return templ.Attributes{}
+}
+
+func lazyJobs(r store.FeedRun) templ.Attributes {
+	if len(r.Jobs) > 0 {
+		return templ.Attributes{}
+	}
+	return templ.Attributes{
+		"hx-get":     "/runs/" + strconv.FormatInt(r.ID, 10) + "/jobs",
+		"hx-trigger": "toggle once",
+		"hx-target":  "find .jobs-list",
+	}
+}
+
+func pulseRuns(feed []store.FeedRun) []store.FeedRun {
+	n := min(len(feed), 90)
+	out := make([]store.FeedRun, n)
+	for i := range n {
+		out[n-1-i] = feed[i]
+	}
+	return out
+}
+
+templ runsPage(v pageView) {
+	@layout(v.shell) {
+		<div class="page-head page-head-row">
+			<div>
+				<h1>Runs</h1>
+				<p>Every workflow run across your repositories, live.</p>
+			</div>
+			@summary(v, false)
+		</div>
+		@pulse(v, false)
+		@filters(v)
+		<div class="card feed-card">
+			<div id="feed" class="feed" hx-get="/runs" hx-include="#filters" hx-trigger="sse:update throttle:750ms, every 30s">
+				@feedRows(v)
+			</div>
+		</div>
+	}
+}
+
+templ feedFragment(v pageView) {
+	@feedRows(v)
+	@summary(v, true)
+	@pulse(v, true)
+}
+
+templ summary(v pageView, swap bool) {
+	<nav id="summary" class="summary" aria-label="Summary" { oob(swap)... }>
+		<a class={ "stat", templ.KV("lit k-run", v.Summary.Active > 0) } href={ templ.URL(v.query("status", "active")) }>
+			<b>{ strconv.Itoa(v.Summary.Active) }</b> running
+		</a>
+		<a class={ "stat", templ.KV("lit k-stuck", v.Summary.Stuck > 0) } href={ templ.URL(v.query("status", "stuck")) } title={ "Queued longer than " + humanDuration(v.Threshold) }>
+			<b>{ strconv.Itoa(v.Summary.Stuck) }</b> stuck
+		</a>
+		<a class={ "stat", templ.KV("lit k-fail", v.Summary.FailingDefault > 0) } href={ templ.URL("/runs?status=failure&default=1") } title="Workflows whose latest default-branch run failed">
+			<b>{ strconv.Itoa(v.Summary.FailingDefault) }</b> red on default
+		</a>
+	</nav>
+}
+
+templ pulse(v pageView, swap bool) {
+	<nav id="pulse" class="pulse" aria-label="Recent runs, oldest to newest. Bar height is run duration." { oob(swap)... }>
+		for _, r := range pulseRuns(v.Feed) {
+			<a
+				class={ "bar", "s-" + string(runState(r)) }
+				href={ templ.URL("#run-" + strconv.FormatInt(r.ID, 10)) }
+				style={ templ.SafeCSS("--h:" + pulseHeight(r, v.Now) + "%") }
+				title={ r.Owner + "/" + r.RepoName + " · " + r.WorkflowName + " · " + runState(r).label() + " · " + runTiming(r, v.Now) }
+			></a>
+		}
+	</nav>
+}
+
+templ selectField(label, name, current string, options []string, labels map[string]string) {
+	<label class="field">
+		<span>{ label }</span>
+		<select name={ name }>
+			<option value="">All</option>
+			for _, o := range options {
+				<option value={ o } selected?={ o == current }>
+					if l, ok := labels[o]; ok {
+						{ l }
+					} else {
+						{ o }
+					}
+				</option>
+			}
+		</select>
+	</label>
+}
+
+templ toggle(name, label string, on bool) {
+	<label class="chk">
+		<input type="checkbox" name={ name } value="1" checked?={ on }/>
+		<span>{ label }</span>
+	</label>
+}
+
+var statusOptions = []string{"active", "stuck", "failure", "success", "cancelled"}
+var statusLabels = map[string]string{"active": "Running or queued", "stuck": "Stuck", "failure": "Failed", "success": "Succeeded", "cancelled": "Cancelled"}
+
+templ filters(v pageView) {
+	<form id="filters" class="filters card" method="get" action="/runs" hx-get="/runs" hx-target="#feed" hx-push-url="true" hx-trigger="change, input changed delay:400ms from:#f-branch, submit">
+		@selectField("Org", "org", v.Filter.Owner, v.Options.Owners, nil)
+		@selectField("Repo", "repo", v.Filter.Repo, v.Options.Repos, nil)
+		@selectField("Event", "event", v.Filter.Event, v.Options.Events, nil)
+		@selectField("Status", "status", string(v.Filter.Status), statusOptions, statusLabels)
+		<label class="field">
+			<span>Branch</span>
+			<input id="f-branch" type="search" name="branch" value={ v.Filter.Branch } placeholder="any" autocomplete="off" spellcheck="false"/>
+		</label>
+		<div class="toggles">
+			@toggle("default", "Default branch only", v.Filter.DefaultOnly)
+			@toggle("bots", "Show bots", v.Filter.ShowBots)
+			@toggle("forks", "Show forks", v.Filter.ShowForks)
+			@toggle("archived", "Show archived", v.Filter.ShowArchived)
+		</div>
+		<noscript><button type="submit">Apply</button></noscript>
+	</form>
+}
+
+templ feedRows(v pageView) {
+	if v.Installations == 0 && len(v.Feed) == 0 {
+		<div class="empty">
+			<p class="empty-title">No organizations connected yet.</p>
+			<p>Install the GitHub App on an organization and its workflow runs will appear here within a few seconds.</p>
+		</div>
+	} else if len(v.Feed) == 0 {
+		<div class="empty">
+			<p class="empty-title">No runs match these filters.</p>
+			if v.filtered() {
+				<p><a href="/runs">Clear filters</a> to see every run.</p>
+			}
+		</div>
+	} else {
+		<ol class="runs">
+			for _, r := range v.Feed {
+				@runRow(v, r)
+			}
+		</ol>
+	}
+}
+
+templ runRow(v pageView, r store.FeedRun) {
+	<li>
+		<details class={ "run", "s-" + string(runState(r)) } id={ "run-" + strconv.FormatInt(r.ID, 10) } { lazyJobs(r)... }>
+			<summary>
+				<span class="rail" aria-hidden="true"></span>
+				<span class="glyph" title={ runState(r).label() }>
+					<span aria-hidden="true">{ runState(r).glyph() }</span>
+					<span class="sr">{ runState(r).label() }</span>
+				</span>
+				<span class="where">
+					<span class="org">{ r.Owner }/</span><span class="repo">{ r.RepoName }</span>
+				</span>
+				<span class="what">
+					<span class="wf">{ r.WorkflowName }</span>
+					<span class="num">#{ strconv.Itoa(r.RunNumber) }</span>
+					if r.RunAttempt > 1 {
+						<span class="attempt" title="Re-run attempt">↻{ strconv.Itoa(r.RunAttempt) }</span>
+					}
+				</span>
+				<span class="ref">
+					<span class={ "branch", templ.KV("default", r.HeadBranch == r.DefaultBranch && r.PRNumber == 0) } title={ r.HeadBranch + " @ " + shortSHA(r.HeadSHA) }>{ branchLabel(r) }</span>
+					<span class="event">{ r.Event }</span>
+				</span>
+				<span class="title" title={ headline(r) }>{ headline(r) }</span>
+				<span class="actor">
+					{ r.ActorLogin }
+				</span>
+				<span class="time">
+					<span class="dur">{ runTiming(r, v.Now) }</span>
+					<span class="ago">{ ago(r.QueuedSince(), v.Now) }</span>
+				</span>
+			</summary>
+			<div class="jobs">
+				<div class="jobs-list">
+					if len(r.Jobs) > 0 {
+						@jobList(r.Jobs, v.Now, v.Threshold, r.HTMLURL, false, v.Writable[r.RepoID])
+					} else {
+						<p class="note">Loading jobs…</p>
+					}
+				</div>
+				<a class="open details-link" href={ templ.URL("/runs/" + strconv.FormatInt(r.ID, 10)) }>Run details, annotations and workflow file →</a>
+			</div>
+		</details>
+	</li>
+}
+
+templ jobList(jobs []store.Job, now time.Time, threshold time.Duration, runURL string, failed bool, canAct bool) {
+	if failed {
+		<p class="note">Couldn't load jobs from GitHub. Check the server log, or open the run on GitHub.</p>
+	} else if len(jobs) == 0 {
+		<p class="note">No jobs have been created for this run yet.</p>
+	} else {
+		<ul class="job-list">
+			for _, j := range jobs {
+				<li>
+					<details class={ "job", "s-" + string(jobState(j, now, threshold)) } id={ "job-" + strconv.FormatInt(j.ID, 10) }>
+						<summary>
+							<span class="glyph" title={ jobState(j, now, threshold).label() }>
+								<span aria-hidden="true">{ jobState(j, now, threshold).glyph() }</span>
+								<span class="sr">{ jobState(j, now, threshold).label() }</span>
+							</span>
+							<span class="job-name">{ j.Name }</span>
+							<span class="labels">{ strings.Join(j.Labels, " · ") }</span>
+							<span class="runner">{ j.RunnerName }</span>
+							<span class="dur">{ jobTiming(j, now) }</span>
+						</summary>
+						@jobBody(j, now, canAct)
+					</details>
+				</li>
+			}
+		</ul>
+	}
+	if runURL != "" {
+		<a class="open" href={ templ.URL(runURL) } target="_blank" rel="noopener">Open run on GitHub ↗</a>
+	}
+}
+
+func jobIDStr(j store.Job) string { return strconv.FormatInt(j.ID, 10) }
+
+// livePoll makes a running job's body refresh itself while its row is expanded.
+func livePoll(j store.Job) templ.Attributes {
+	if j.Status == "completed" {
+		return templ.Attributes{}
+	}
+	return templ.Attributes{
+		"hx-get":     "/jobs/" + jobIDStr(j) + "/body",
+		"hx-trigger": "every 5s [this.closest('details.job') && this.closest('details.job').open]",
+		"hx-swap":    "outerHTML",
+	}
+}
+
+templ jobBody(j store.Job, now time.Time, canAct bool) {
+	<div class="job-body" id={ "job-body-" + jobIDStr(j) } { livePoll(j)... }>
+		if len(j.Steps) > 0 {
+			<ol class="steps">
+				for _, st := range j.Steps {
+					<li class={ "step", "s-" + string(statusState(st.Status, st.Conclusion)) }>
+						<span class="glyph" aria-hidden="true">{ statusState(st.Status, st.Conclusion).glyph() }</span>
+						<span class="step-name">
+							{ st.Name }
+							<span class="sr">{ statusState(st.Status, st.Conclusion).label() }</span>
+						</span>
+						<span class="dur">{ stepTiming(st, now) }</span>
+					</li>
+				}
+			</ol>
+		} else if j.Status != "completed" {
+			<p class="note">Waiting for the runner to report steps…</p>
+		}
+		<div class="job-actions">
+			if j.Status == "completed" {
+				<button type="button" class="btn" hx-get={ "/jobs/" + jobIDStr(j) + "/log" } hx-target={ "#log-" + jobIDStr(j) } hx-swap="innerHTML">
+					Show log
+				</button>
+				if canAct {
+					<button type="button" class="btn" hx-post={ "/jobs/" + jobIDStr(j) + "/rerun" } hx-swap="none" hx-confirm={ "Re-run the job \"" + j.Name + "\"?" }>
+						@icon("rerun")
+						Re-run job
+					</button>
+				}
+				if j.HTMLURL != "" {
+					<a class="open" href={ templ.URL(j.HTMLURL) } target="_blank" rel="noopener">Open log on GitHub ↗</a>
+				}
+			} else {
+				<span class="live-note">
+					<span class="live-dot" aria-hidden="true"></span>
+					Steps update every 5 seconds. GitHub only shares log text once the job finishes.
+				</span>
+				if j.HTMLURL != "" {
+					<a class="open" href={ templ.URL(j.HTMLURL) } target="_blank" rel="noopener">Watch live log on GitHub ↗</a>
+				}
+			}
+		</div>
+		if j.Status == "completed" && j.CheckRunID != 0 {
+			<div class="annotations" hx-get={ "/jobs/" + jobIDStr(j) + "/annotations" } hx-trigger="intersect once"></div>
+		}
+		<div class="log-slot" id={ "log-" + jobIDStr(j) }></div>
+	</div>
+}
+
+templ logNote(j store.Job, msg string) {
+	<p class="note">{ msg }</p>
+}
+
+templ jobLogView(j store.Job, v joblog.View) {
+	<div class="log" data-job={ jobIDStr(j) } data-first-error={ strconv.Itoa(v.FirstError) }>
+		<div class="log-head">
+			if v.Total > len(v.Lines) {
+				<span>Last { strconv.Itoa(len(v.Lines)) } of { strconv.Itoa(v.Total) } lines</span>
+			} else {
+				<span>{ strconv.Itoa(v.Total) } lines</span>
+			}
+			if v.FirstError >= 0 {
+				<button type="button" class="btn-link" data-jump-error>Jump to first error</button>
+			}
+		</div>
+		<pre class="log-pre">
+			for i, l := range v.Lines {
+				<span class={ "l", templ.KV("l-"+l.Kind, l.Kind != "") } data-line={ strconv.Itoa(i) }>{ l.Text }</span>
+			}
+		</pre>
+	</div>
+}
+
+templ annotationList(anns []syncer.Annotation, blobURL string) {
+	if len(anns) > 0 {
+		<ul class="ann-list">
+			for _, a := range anns {
+				<li class={ "ann", "ann-" + a.Level }>
+					@icon("alert")
+					<div>
+						if a.Path != "" && a.Path != ".github" {
+							<a class="ann-path" href={ templ.URL(annotationHref(blobURL, a)) } target="_blank" rel="noopener">{ a.Path }:{ strconv.Itoa(a.Line) }</a>
+						}
+						if a.Title != "" {
+							<b>{ a.Title }</b>
+						}
+						<span class="ann-msg">{ a.Message }</span>
+					</div>
+				</li>
+			}
+		</ul>
+	}
+}

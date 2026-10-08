@@ -1,0 +1,12 @@
+# Copy to config.yml and fill in your tunnel ID and hostname.
+#   cloudflared tunnel create runwall
+#   cloudflared tunnel route dns runwall gh-webhooks.example.com
+# Only the webhook path is exposed; the dashboard UI stays on localhost.
+tunnel: <TUNNEL_ID>
+credentials-file: /Users/<you>/.cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  - hostname: gh-webhooks.example.com
+    path: ^/webhook$
+    service: http://127.0.0.1:8080
+  - service: http_status:404

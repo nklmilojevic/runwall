@@ -1,0 +1,35 @@
+# Run with your secrets in the environment, for example:
+#   op run --env-file=secrets.op -- docker compose -f deploy/docker-compose.yml up -d
+# The optional tunnel profile runs a Cloudflare Tunnel (configure its routes in the
+# Cloudflare dashboard: /webhook public, everything else behind Cloudflare Access):
+#   docker compose -f deploy/docker-compose.yml --profile tunnel up -d
+services:
+  runwall:
+    image: ghcr.io/nklmilojevic/runwall:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - data:/data
+    environment:
+      BASE_URL: ${BASE_URL:?set BASE_URL to the dashboard's public URL}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:?}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:?}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:?}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:?}
+      SESSION_KEY: ${SESSION_KEY:?}
+      ALLOWED_ACCOUNTS: ${ALLOWED_ACCOUNTS:-}
+      ALLOWED_USERS: ${ALLOWED_USERS:-}
+      ADMIN_USERS: ${ADMIN_USERS:-}
+
+  tunnel:
+    profiles: [tunnel]
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?}
+
+volumes:
+  data:

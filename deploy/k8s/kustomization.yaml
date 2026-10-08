@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: runwall
+labels:
+  - pairs:
+      app.kubernetes.io/name: runwall
+    includeSelectors: true
+resources:
+  - namespace.yaml
+  - externalsecret.yaml
+  - pvc.yaml
+  - deployment.yaml
+  - service.yaml
+# Non-secret settings; see the README's configuration reference.
+configMapGenerator:
+  - name: runwall
+    literals:
+      - BASE_URL=https://actions.example.com
+      - ALLOWED_ACCOUNTS=
+      - ADMIN_USERS=
+images:
+  - name: runwall
+    newName: ghcr.io/nklmilojevic/runwall
+    newTag: latest
