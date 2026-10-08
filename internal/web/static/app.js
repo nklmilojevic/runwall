@@ -15,7 +15,7 @@
     var theme = root.getAttribute("data-theme") === "light" ? "dark" : "light";
     root.setAttribute("data-theme", theme);
     store("theme", theme);
-    renderCharts(document);
+    renderCharts(document, true);
   });
 
   // Sidebar: collapse on desktop, drawer on mobile
@@ -212,20 +212,57 @@
     });
   }
 
-  function renderCharts(scope) {
+  // update replaces a chart's data in place, without animation.
+  function update(chart, spec) {
+    chart.data.labels = spec.labels;
+    if (spec.kind === "doughnut") {
+      chart.data.datasets[0].data = spec.series.map(function (s) {
+        return s.data[0];
+      });
+    } else {
+      spec.series.forEach(function (s, i) {
+        if (chart.data.datasets[i]) chart.data.datasets[i].data = s.data;
+      });
+    }
+    chart.update("none");
+  }
+
+  // renderCharts draws the charts in scope. Charts are keyed by data-chart-id, so when
+  // a live refresh re-renders a region, the existing chart (and its canvas) is kept
+  // and only its data changes. Rebuilding would blank the canvas and replay the
+  // draw animation on every refresh. rebuild=true redraws everything (theme change).
+  function renderCharts(scope, rebuild) {
     if (!window.Chart) return;
-    charts.forEach(function (chart, canvas) {
-      if (scope === document || !document.body.contains(canvas)) {
-        chart.destroy();
-        charts.delete(canvas);
-      }
-    });
+    if (rebuild) {
+      charts.forEach(function (c) {
+        c.chart.destroy();
+      });
+      charts.clear();
+    }
     scope.querySelectorAll("canvas[data-chart]").forEach(function (canvas) {
-      if (charts.has(canvas)) return;
+      var id = canvas.dataset.chartId || canvas.dataset.chart;
+      var prev = charts.get(id);
+      if (prev && prev.canvas === canvas) return;
+      if (prev) {
+        var spec = canvas.dataset.chart;
+        canvas.replaceWith(prev.canvas);
+        if (spec !== prev.spec) {
+          prev.spec = spec;
+          prev.canvas.dataset.chart = spec;
+          update(prev.chart, JSON.parse(spec));
+        }
+        return;
+      }
       try {
-        charts.set(canvas, build(canvas));
+        charts.set(id, { chart: build(canvas), canvas: canvas, spec: canvas.dataset.chart });
       } catch (err) {
         console.error("chart", err);
+      }
+    });
+    charts.forEach(function (c, id) {
+      if (!document.body.contains(c.canvas)) {
+        c.chart.destroy();
+        charts.delete(id);
       }
     });
   }

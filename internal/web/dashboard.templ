@@ -56,11 +56,11 @@ templ dashBody(d dashView) {
 	<section class="charts">
 		<div class="card chart-card">
 			<h2 class="card-title">Run trends</h2>
-			<div class="chart-box"><canvas data-chart={ trendChart(d.Sum) } aria-label="Succeeded and failed runs over time" role="img"></canvas></div>
+			<div class="chart-box"><canvas data-chart-id="trend" data-chart={ trendChart(d.Sum) } aria-label="Succeeded and failed runs over time" role="img"></canvas></div>
 		</div>
 		<div class="card chart-card">
 			<h2 class="card-title">Run distribution</h2>
-			<div class="chart-box chart-box-donut"><canvas data-chart={ distributionChart(d.Sum.Counts) } aria-label="Share of succeeded, failed and other runs" role="img"></canvas></div>
+			<div class="chart-box chart-box-donut"><canvas data-chart-id="distribution" data-chart={ distributionChart(d.Sum.Counts) } aria-label="Share of succeeded, failed and other runs" role="img"></canvas></div>
 			<p class="chart-foot">Success rate <b class={ rateClass(d.Sum.Counts.SuccessRate()) }>{ pct(d.Sum.Counts.SuccessRate()) }</b></p>
 		</div>
 	</section>
@@ -120,7 +120,7 @@ templ recentList(runs []store.FeedRun, now time.Time) {
 							<span class="sr">{ runState(r).label() }</span>
 						</span>
 						<span class="recent-main">
-							<b>{ headline(r) }<span class="muted"> #{ strconv.Itoa(r.RunNumber) }</span></b>
+							<b>{ headline(r) }<span class="muted">#{ strconv.Itoa(r.RunNumber) }</span></b>
 							<small>{ r.Owner }/{ r.RepoName } · { r.WorkflowName } · { branchLabel(r) }</small>
 						</span>
 						<span class="recent-time">

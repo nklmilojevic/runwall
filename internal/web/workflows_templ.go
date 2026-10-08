@@ -493,27 +493,27 @@ func workflowDetailPage(wv workflowView) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 35, "</section><section class=\"charts\"><div class=\"card chart-card\"><h2 class=\"card-title\">Run trends</h2><div class=\"chart-box\"><canvas data-chart=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 35, "</section><section class=\"charts\"><div class=\"card chart-card\"><h2 class=\"card-title\">Run trends</h2><div class=\"chart-box\"><canvas data-chart-id=\"trend\" data-chart=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var29 string
 			templ_7745c5c3_Var29, templ_7745c5c3_Err = templ.ResolveAttributeValue(trendChart(wv.Sum))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/workflows.templ`, Line: 106, Col: 66}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/workflows.templ`, Line: 106, Col: 88}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var29)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 36, "\" role=\"img\" aria-label=\"Succeeded and failed runs over time\"></canvas></div></div><div class=\"card chart-card\"><h2 class=\"card-title\">Duration of recent runs</h2><div class=\"chart-box\"><canvas data-chart=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 36, "\" role=\"img\" aria-label=\"Succeeded and failed runs over time\"></canvas></div></div><div class=\"card chart-card\"><h2 class=\"card-title\">Duration of recent runs</h2><div class=\"chart-box\"><canvas data-chart-id=\"durations\" data-chart=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var30 string
 			templ_7745c5c3_Var30, templ_7745c5c3_Err = templ.ResolveAttributeValue(durationChart(wv.Runs, wv.Now))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/workflows.templ`, Line: 110, Col: 78}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/workflows.templ`, Line: 110, Col: 104}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var30)
 			if templ_7745c5c3_Err != nil {

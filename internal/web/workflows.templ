@@ -103,11 +103,11 @@ templ workflowDetailPage(wv workflowView) {
 		<section class="charts">
 			<div class="card chart-card">
 				<h2 class="card-title">Run trends</h2>
-				<div class="chart-box"><canvas data-chart={ trendChart(wv.Sum) } role="img" aria-label="Succeeded and failed runs over time"></canvas></div>
+				<div class="chart-box"><canvas data-chart-id="trend" data-chart={ trendChart(wv.Sum) } role="img" aria-label="Succeeded and failed runs over time"></canvas></div>
 			</div>
 			<div class="card chart-card">
 				<h2 class="card-title">Duration of recent runs</h2>
-				<div class="chart-box"><canvas data-chart={ durationChart(wv.Runs, wv.Now) } role="img" aria-label="Minutes per run"></canvas></div>
+				<div class="chart-box"><canvas data-chart-id="durations" data-chart={ durationChart(wv.Runs, wv.Now) } role="img" aria-label="Minutes per run"></canvas></div>
 			</div>
 		</section>
 		<section class="card">
