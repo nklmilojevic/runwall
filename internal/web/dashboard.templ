@@ -52,19 +52,28 @@ func runsLink(f store.Selection) string {
 templ dashFilters(d dashView) {
 	<form id="dash-filters" class="filters card dash-filters" method="get" action="/" hx-get="/" hx-target="#dash" hx-trigger="change[target.type==='checkbox']" hx-sync="this:replace">
 		<input type="hidden" name="f" value="1"/>
-		@picker("Org", "org", d.Options.Owners, d.Filter.Owners, false)
-		@picker("Repo", "repo", d.Options.Repos, d.Filter.Repos, true)
+		@picker("Org", "org", d.Options.Owners, d.Filter.Owners, false, nil, nil)
+		@picker("Repo", "repo", d.Options.Repos, d.Filter.Repos, true, d.Options.OwnedBy, d.Filter.Owners)
 		if len(d.Options.Topics) > 0 {
-			@picker("Topic", "topic", d.Options.Topics, d.Filter.Topics, len(d.Options.Topics) > 8)
+			@picker("Topic", "topic", d.Options.Topics, d.Filter.Topics, len(d.Options.Topics) > 8, d.Options.OwnedBy, d.Filter.Owners)
 		}
-		@picker("User", "actor", d.Options.Actors, d.Filter.Actors, true)
+		@picker("User", "actor", d.Options.Actors, d.Filter.Actors, true, d.Options.OwnedBy, d.Filter.Owners)
 		<a class="btn btn-sm" href="/?f=1" data-clear hidden?={ d.Filter.Empty() }>Clear</a>
 		<noscript><button type="submit" class="btn btn-sm">Apply</button></noscript>
 	</form>
 }
 
-templ picker(label, name string, options, selected []string, search bool) {
-	<details class="picker" data-picker>
+// outsideOrgs reports whether an option belongs to none of the picked orgs. Ticked options
+// always stay visible, so they can be cleared.
+func outsideOrgs(owners, orgs []string, checked bool) bool {
+	if len(orgs) == 0 || checked || len(owners) == 0 {
+		return false
+	}
+	return !slices.ContainsFunc(owners, func(o string) bool { return slices.Contains(orgs, o) })
+}
+
+templ picker(label, name string, options, selected []string, search bool, ownedBy map[string][]string, orgs []string) {
+	<details class="picker" data-picker data-picker-name={ name }>
 		<summary>
 			<span class="picker-label">{ label }</span>
 			<b class="picker-value" data-picker-value>{ pickerSummary(selected) }</b>
@@ -75,7 +84,7 @@ templ picker(label, name string, options, selected []string, search bool) {
 			}
 			<div class="picker-list">
 				for _, o := range options {
-					<label class="chk">
+					<label class={ "chk", templ.KV("off-org", outsideOrgs(ownedBy[o], orgs, slices.Contains(selected, o))) } data-owners={ strings.Join(ownedBy[o], " ") }>
 						<input type="checkbox" name={ name } value={ o } checked?={ slices.Contains(selected, o) }/>
 						<span>{ o }</span>
 					</label>

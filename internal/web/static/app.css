@@ -1793,7 +1793,8 @@ fieldset.field {
   align-items: center;
   margin-bottom: 20px;
 }
-.dash-filters [hidden] {
+.dash-filters [hidden],
+.dash-filters .off-org {
   display: none;
 }
 

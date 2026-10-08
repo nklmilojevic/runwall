@@ -516,3 +516,30 @@ func TestFilterByUser(t *testing.T) {
 		t.Error("dashboard user filter not applied")
 	}
 }
+
+func TestOrgNarrowsOtherPickers(t *testing.T) {
+	e := newDemo(t)
+	_, body := get(t, e.srv.URL+"/?org=acme-labs&repo=octocat/dotfiles", nil, nil)
+	row := func(name, value string) string {
+		i := strings.Index(body, `name="`+name+`" value="`+value+`"`)
+		if i < 0 {
+			t.Fatalf("no %s option %q", name, value)
+		}
+		return body[strings.LastIndex(body[:i], "<label"):i]
+	}
+	if strings.Contains(row("repo", "acme-labs/cli"), "off-org") {
+		t.Error("a repo of the picked org must stay listed")
+	}
+	if !strings.Contains(row("repo", "acme/api"), "off-org") {
+		t.Error("repos of other orgs should be hidden")
+	}
+	if strings.Contains(row("repo", "octocat/dotfiles"), "off-org") {
+		t.Error("a ticked repo stays listed so it can be cleared")
+	}
+	if !strings.Contains(row("topic", "frontend"), "off-org") || strings.Contains(row("topic", "go"), "off-org") {
+		t.Error("topics follow the picked org")
+	}
+	if strings.Contains(row("org", "acme"), "off-org") {
+		t.Error("the org picker itself is never narrowed")
+	}
+}

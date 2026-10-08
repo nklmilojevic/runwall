@@ -62,7 +62,28 @@
     var form = picker.closest("form");
     var clear = form && form.querySelector("[data-clear]");
     if (clear) clear.hidden = !form.querySelector("[data-picker] input:checked");
+    if (form && picker.dataset.pickerName === "org") narrowToOrgs(form);
   });
+  // Picking orgs hides the repos, topics and users of other orgs. Ticked rows stay, so they can be cleared.
+  function narrowToOrgs(form) {
+    var orgs = Array.prototype.map.call(
+      form.querySelectorAll("[data-picker-name=org] input:checked"),
+      function (i) {
+        return i.value;
+      },
+    );
+    form.querySelectorAll(".chk[data-owners]").forEach(function (row) {
+      var owners = row.dataset.owners ? row.dataset.owners.split(" ") : [];
+      var outside =
+        orgs.length > 0 &&
+        owners.length > 0 &&
+        !row.querySelector("input").checked &&
+        !owners.some(function (o) {
+          return orgs.indexOf(o) >= 0;
+        });
+      row.classList.toggle("off-org", outside);
+    });
+  }
   document.addEventListener("input", function (e) {
     if (!e.target.matches("[data-picker-search]")) return;
     var needle = e.target.value.trim().toLowerCase();

@@ -88,6 +88,9 @@ type dashView struct {
 
 type dashOptions struct {
 	Owners, Repos, Topics, Actors []string
+	// OwnedBy maps a repo, topic or user option to the orgs it belongs to, so picking
+	// orgs can narrow the other pickers.
+	OwnedBy map[string][]string
 }
 
 type costInfo struct {
@@ -175,18 +178,25 @@ func (s *Server) dashOptionsFor(ctx context.Context, sc store.Scope, f store.Sel
 	if err != nil {
 		return dashOptions{}, err
 	}
-	fo, err := s.Store.FilterOptions(ctx, sc)
+	actors, err := s.Store.ActorOwners(ctx, sc)
 	if err != nil {
 		return dashOptions{}, err
 	}
-	o := dashOptions{Owners: f.Owners, Repos: f.Repos, Topics: f.Topics, Actors: append(slices.Clone(f.Actors), fo.Actors...)}
+	o := dashOptions{Owners: f.Owners, Repos: f.Repos, Topics: f.Topics, Actors: f.Actors, OwnedBy: actors}
+	for a := range actors {
+		o.Actors = append(o.Actors, a)
+	}
 	for _, r := range repos {
 		if r.Archived {
 			continue
 		}
 		o.Owners = append(o.Owners, r.Owner)
 		o.Repos = append(o.Repos, r.FullName)
-		o.Topics = append(o.Topics, r.Topics...)
+		o.OwnedBy[r.FullName] = []string{r.Owner}
+		for _, t := range r.Topics {
+			o.Topics = append(o.Topics, t)
+			o.OwnedBy[t] = append(o.OwnedBy[t], r.Owner)
+		}
 	}
 	for _, vs := range []*[]string{&o.Owners, &o.Repos, &o.Topics, &o.Actors} {
 		*vs = slices.Clone(*vs)
