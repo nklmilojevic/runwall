@@ -4,3 +4,7 @@
 *.db-wal
 deploy/cloudflared/config.yml
 .direnv/
+.env
+*.pem
+# Local secret references (for example 1Password `op run --env-file`)
+secrets.op

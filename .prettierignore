@@ -1,0 +1,7 @@
+# Vendored third-party files, kept byte-for-byte as published.
+internal/web/static/htmx.min.js
+internal/web/static/sse.js
+internal/web/static/chart.umd.min.js
+# Generated
+*_templ.go
+flake.lock

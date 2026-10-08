@@ -1,0 +1,38 @@
+[pre-commit]
+parallel = true
+skip = ["merge", "rebase"]
+
+[pre-commit.commands.format-go]
+glob = ["*.go"]
+exclude = ["*_templ.go"]
+run = "gofmt -s -w {staged_files}"
+stage_fixed = true
+
+[pre-commit.commands.format-templ]
+glob = ["*.templ"]
+run = "go tool templ fmt {staged_files} && go tool templ generate && git add '*_templ.go'"
+stage_fixed = true
+
+[pre-commit.commands.format-just]
+glob = ["justfile"]
+run = "just --fmt"
+stage_fixed = true
+
+[pre-commit.commands.format-web]
+glob = ["*.json", "*.json5", "*.jsonc", "*.md", "*.yaml", "*.yml", "*.css", "*.js"]
+exclude = ["internal/web/static/*.min.js", "internal/web/static/sse.js"]
+run = "oxfmt {staged_files}"
+stage_fixed = true
+
+[pre-commit.commands.zizmor]
+glob = [".github/workflows/*.yml", ".github/workflows/*.yaml"]
+run = "zizmor --offline {staged_files}"
+
+[pre-push]
+parallel = true
+
+[pre-push.commands.check]
+run = "just check"
+
+[pre-push.commands.lint]
+run = "just lint"

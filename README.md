@@ -59,6 +59,7 @@ The demo mode shows sample data. It does not connect to GitHub.
    ```
 
    To make the App for an organization, start the link with `https://github.com/organizations/ORG/settings/apps/new?`. Keep the same parameters.
+
 3. Open the link.
 4. Make a webhook secret with `openssl rand -hex 32`.
 5. Type the webhook secret in the form.
@@ -72,14 +73,14 @@ The demo mode shows sample data. It does not connect to GitHub.
 
 **The permissions of the App:**
 
-| Permission | Runwall uses it for |
-|---|---|
-| Actions: read and write | Runs, jobs and logs. Runwall uses write access only with the token of the person who signs in. It uses this access to re-run and cancel. |
-| Checks: read | Annotations |
-| Contents: read | The workflow file, and the checks for tests, documentation and linters in the grades |
-| Administration: read | Branch protection in the grades |
-| Dependabot alerts, Code scanning alerts, Secret scanning alerts: read | The security part of the grades |
-| Metadata: read | The list of repositories |
+| Permission                                                            | Runwall uses it for                                                                                                                      |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Actions: read and write                                               | Runs, jobs and logs. Runwall uses write access only with the token of the person who signs in. It uses this access to re-run and cancel. |
+| Checks: read                                                          | Annotations                                                                                                                              |
+| Contents: read                                                        | The workflow file, and the checks for tests, documentation and linters in the grades                                                     |
+| Administration: read                                                  | Branch protection in the grades                                                                                                          |
+| Dependabot alerts, Code scanning alerts, Secret scanning alerts: read | The security part of the grades                                                                                                          |
+| Metadata: read                                                        | The list of repositories                                                                                                                 |
 
 Only Actions and Metadata are necessary. If the App does not have one of the other permissions, the related feature shows "not checked". The feature does not fail.
 
@@ -87,22 +88,22 @@ Only Actions and Metadata are necessary. If the App does not have one of the oth
 
 Runwall reads its secrets from environment variables:
 
-| Variable | Value |
-|---|---|
-| `GITHUB_APP_ID` | The App ID |
-| `GITHUB_APP_PRIVATE_KEY_FILE` | The path to the private key file of the App (`.pem`). You can also put the contents of the key in `GITHUB_APP_PRIVATE_KEY`. |
-| `GITHUB_WEBHOOK_SECRET` | The webhook secret |
-| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | The Client ID and the client secret. Runwall uses them for the GitHub sign-in. |
-| `SESSION_KEY` | A random key. Make it with `openssl rand -hex 32`. Runwall uses it to encrypt the sessions and the tokens. |
-| `BASE_URL` | `https://HOST`. It must agree with the callback URL of the App. |
+| Variable                                   | Value                                                                                                                       |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `GITHUB_APP_ID`                            | The App ID                                                                                                                  |
+| `GITHUB_APP_PRIVATE_KEY_FILE`              | The path to the private key file of the App (`.pem`). You can also put the contents of the key in `GITHUB_APP_PRIVATE_KEY`. |
+| `GITHUB_WEBHOOK_SECRET`                    | The webhook secret                                                                                                          |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | The Client ID and the client secret. Runwall uses them for the GitHub sign-in.                                              |
+| `SESSION_KEY`                              | A random key. Make it with `openssl rand -hex 32`. Runwall uses it to encrypt the sessions and the tokens.                  |
+| `BASE_URL`                                 | `https://HOST`. It must agree with the callback URL of the App.                                                             |
 
-Keep the secrets in a secret manager. Give them to Runwall when it starts. The file [`secrets.op`](secrets.op) shows how to do this with `op run` from 1Password.
+Copy [`env.example`](env.example) to `.env` and fill in the values. Do not commit `.env`. In production, keep the secrets in a secret manager and give them to Runwall as environment variables when it starts.
 
 Select one of these methods to start Runwall:
 
 - **Docker Compose.** Use [`deploy/docker-compose.yml`](deploy/docker-compose.yml). It starts Runwall with a persistent volume. It can also start a Cloudflare Tunnel.
 - **Kubernetes.** Use the Kustomize base in [`deploy/k8s`](deploy/k8s). It has a Deployment with one replica, a PersistentVolumeClaim, a Service, an ExternalSecret for the secrets and a ConfigMap for the settings.
-- **Binary.** Build the binary with `go build ./cmd/runwall`. Or use `just run`. This command gives the secrets to Runwall with `op run --env-file=secrets.op`.
+- **Binary.** Build the binary with `go build ./cmd/runwall`. Or use `just run`. This command reads the settings from `.env`.
 
 Use only one replica. Runwall keeps its data in an SQLite file.
 
@@ -138,25 +139,25 @@ When Runwall stops, GitHub cannot send webhooks to it. GitHub does not send them
 
 ## Configuration
 
-| Variable | Default | Description |
-|---|---|---|
-| `BASE_URL` | `http://` + `LISTEN_ADDR` | The public URL. Runwall uses it for the GitHub callback, the kiosk links and the MCP link. |
-| `LISTEN_ADDR` | `127.0.0.1:8080` (`:8080` in the image) | The address where Runwall listens. |
-| `DB_PATH` | `runwall.db` (`/data/runwall.db` in the image) | The SQLite file. |
-| `ALLOWED_ACCOUNTS` | All accounts | The installation accounts that Runwall uses, separated by commas. Runwall ignores all other accounts. |
-| `ALLOWED_USERS` | Each person with repository access | The GitHub logins that can sign in, separated by commas. |
-| `ADMIN_USERS` | The owner of the App | The GitHub logins of the administrators, separated by commas. |
-| `STUCK_THRESHOLD` | `5m` | A run that waits in the queue for longer than this time is stuck. |
-| `BACKFILL_WINDOW` | `168h` | The history that Runwall reads for a new repository. |
-| `RECONCILE_INTERVAL` | `3m` | The interval between checks of busy repositories. |
-| `COLD_INTERVAL` | `1h` | The interval between checks of quiet repositories. A repository is quiet when it has no push and no run for 24 hours. |
-| `SYNC_CONCURRENCY` | `4` | The number of repositories that Runwall checks at the same time. |
-| `JOB_BACKFILL` | `200` | For each installation and check, the number of older runs for which Runwall reads the jobs. Runwall uses the jobs to calculate the cost. |
-| `RETENTION` | `2160h` (90 days) | The time that Runwall keeps completed runs. |
-| `COST_RATES_FILE` | Built-in prices | A JSON file that changes the price per minute. Example: `{"as_of": "…", "rates": {"linux-2": 0.006}, "labels": {"my-runner": 0.02}}` |
-| `NOTIFIER` | `macos` on macOS, `log` on other systems | The notification for failed runs on the default branch: `macos`, `log` or `none`. |
-| `GITHUB_API_URL`, `GITHUB_WEB_URL` | github.com | Set these for GitHub Enterprise Server. |
-| `LOG_LEVEL` | `info` | The log level. |
+| Variable                           | Default                                        | Description                                                                                                                              |
+| ---------------------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `BASE_URL`                         | `http://` + `LISTEN_ADDR`                      | The public URL. Runwall uses it for the GitHub callback, the kiosk links and the MCP link.                                               |
+| `LISTEN_ADDR`                      | `127.0.0.1:8080` (`:8080` in the image)        | The address where Runwall listens.                                                                                                       |
+| `DB_PATH`                          | `runwall.db` (`/data/runwall.db` in the image) | The SQLite file.                                                                                                                         |
+| `ALLOWED_ACCOUNTS`                 | All accounts                                   | The installation accounts that Runwall uses, separated by commas. Runwall ignores all other accounts.                                    |
+| `ALLOWED_USERS`                    | Each person with repository access             | The GitHub logins that can sign in, separated by commas.                                                                                 |
+| `ADMIN_USERS`                      | The owner of the App                           | The GitHub logins of the administrators, separated by commas.                                                                            |
+| `STUCK_THRESHOLD`                  | `5m`                                           | A run that waits in the queue for longer than this time is stuck.                                                                        |
+| `BACKFILL_WINDOW`                  | `168h`                                         | The history that Runwall reads for a new repository.                                                                                     |
+| `RECONCILE_INTERVAL`               | `3m`                                           | The interval between checks of busy repositories.                                                                                        |
+| `COLD_INTERVAL`                    | `1h`                                           | The interval between checks of quiet repositories. A repository is quiet when it has no push and no run for 24 hours.                    |
+| `SYNC_CONCURRENCY`                 | `4`                                            | The number of repositories that Runwall checks at the same time.                                                                         |
+| `JOB_BACKFILL`                     | `200`                                          | For each installation and check, the number of older runs for which Runwall reads the jobs. Runwall uses the jobs to calculate the cost. |
+| `RETENTION`                        | `2160h` (90 days)                              | The time that Runwall keeps completed runs.                                                                                              |
+| `COST_RATES_FILE`                  | Built-in prices                                | A JSON file that changes the price per minute. Example: `{"as_of": "…", "rates": {"linux-2": 0.006}, "labels": {"my-runner": 0.02}}`     |
+| `NOTIFIER`                         | `macos` on macOS, `log` on other systems       | The notification for failed runs on the default branch: `macos`, `log` or `none`.                                                        |
+| `GITHUB_API_URL`, `GITHUB_WEB_URL` | github.com                                     | Set these for GitHub Enterprise Server.                                                                                                  |
+| `LOG_LEVEL`                        | `info`                                         | The log level.                                                                                                                           |
 
 ## How Runwall works
 
@@ -169,7 +170,7 @@ When Runwall stops, GitHub cannot send webhooks to it. GitHub does not send them
 
 ## Development
 
-The Nix flake has all the development tools: Go, gopls, golangci-lint, just, SQLite, the GitHub CLI, the 1Password CLI, cloudflared, kubectl and kustomize.
+The Nix flake has all the development tools: Go, gopls, golangci-lint, just, lefthook, oxfmt, zizmor, SQLite, the GitHub CLI, the 1Password CLI, cloudflared, kubectl and kustomize.
 
 1. Start the development shell:
 
@@ -179,6 +180,8 @@ The Nix flake has all the development tools: Go, gopls, golangci-lint, just, SQL
 
    If you use direnv, run `direnv allow` one time. Then the shell starts automatically in this directory.
 
+   The shell installs the git hooks from `.lefthook.toml`. Before each commit, the hooks format Go, templ, justfile, YAML, Markdown, JSON, CSS and JavaScript files, and zizmor examines the workflows. Before each push, the hooks run `just check` and `just lint`.
+
 2. Run `just` to see all the recipes. These are the most important recipes:
 
    ```sh
@@ -186,7 +189,7 @@ The Nix flake has all the development tools: Go, gopls, golangci-lint, just, SQL
    just lint     # Run golangci-lint.
    just check    # Run the same checks as CI.
    just demo     # Start with sample data on http://127.0.0.1:8080.
-   just run      # Start with a real GitHub App. The secrets come from 1Password (secrets.op).
+   just run      # Start with a real GitHub App. The settings come from .env.
    just tunnel   # Start a cloudflared tunnel for /webhook only.
    ```
 

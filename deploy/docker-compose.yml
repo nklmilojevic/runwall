@@ -1,5 +1,5 @@
-# Run with your secrets in the environment, for example:
-#   op run --env-file=secrets.op -- docker compose -f deploy/docker-compose.yml up -d
+# Put the settings in a .env file next to this file (see env.example), then:
+#   docker compose -f deploy/docker-compose.yml up -d
 # The optional tunnel profile runs a Cloudflare Tunnel (configure its routes in the
 # Cloudflare dashboard: /webhook public, everything else behind Cloudflare Access):
 #   docker compose -f deploy/docker-compose.yml --profile tunnel up -d

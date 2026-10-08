@@ -57,7 +57,9 @@
     navigator.clipboard.writeText(el.textContent.trim()).then(function () {
       var label = btn.textContent;
       btn.textContent = "Copied";
-      setTimeout(function () { btn.textContent = label; }, 1500);
+      setTimeout(function () {
+        btn.textContent = label;
+      }, 1500);
     });
   });
 
@@ -70,9 +72,16 @@
     t.setAttribute("role", kind === "error" ? "alert" : "status");
     t.textContent = message;
     box.appendChild(t);
-    setTimeout(function () { t.remove(); }, kind === "error" ? 8000 : 4000);
+    setTimeout(
+      function () {
+        t.remove();
+      },
+      kind === "error" ? 8000 : 4000,
+    );
   }
-  document.body.addEventListener("toast", function (e) { toast(e.detail.kind, e.detail.message); });
+  document.body.addEventListener("toast", function (e) {
+    toast(e.detail.kind, e.detail.message);
+  });
   document.addEventListener("htmx:responseError", function (e) {
     if (e.detail.xhr.getResponseHeader("HX-Trigger")) return; // the server already sent a toast
     toast("error", e.detail.xhr.responseText || "Request failed.");
@@ -80,7 +89,9 @@
 
   // Charts: specs live in data-chart; colours come from the theme's CSS variables.
   var charts = new Map();
-  function cssVar(name) { return getComputedStyle(root).getPropertyValue(name).trim(); }
+  function cssVar(name) {
+    return getComputedStyle(root).getPropertyValue(name).trim();
+  }
   function alpha(color, a) {
     var m = /^#([0-9a-f]{6})$/i.exec(color);
     if (!m) return color;
@@ -90,43 +101,89 @@
 
   function build(canvas) {
     var spec = JSON.parse(canvas.dataset.chart);
-    var text = cssVar("--subtext0"), grid = cssVar("--surface0");
+    var text = cssVar("--subtext0"),
+      grid = cssVar("--surface0");
     var font = { family: getComputedStyle(document.body).fontFamily, size: 11 };
-    var legend = { labels: { color: text, font: font, boxWidth: 8, boxHeight: 8, usePointStyle: true } };
-    var tooltip = { backgroundColor: cssVar("--crust"), titleColor: cssVar("--text"), bodyColor: cssVar("--text"), borderColor: grid, borderWidth: 1, titleFont: font, bodyFont: font };
-    var animation = matchMedia("(prefers-reduced-motion: reduce)").matches ? false : { duration: 300 };
+    var legend = {
+      labels: { color: text, font: font, boxWidth: 8, boxHeight: 8, usePointStyle: true },
+    };
+    var tooltip = {
+      backgroundColor: cssVar("--crust"),
+      titleColor: cssVar("--text"),
+      bodyColor: cssVar("--text"),
+      borderColor: grid,
+      borderWidth: 1,
+      titleFont: font,
+      bodyFont: font,
+    };
+    var animation = matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? false
+      : { duration: 300 };
 
     if (spec.kind === "doughnut") {
       return new Chart(canvas, {
         type: "doughnut",
         data: {
           labels: spec.labels,
-          datasets: [{
-            data: spec.series.map(function (s) { return s.data[0]; }),
-            backgroundColor: spec.series.map(function (s) { return cssVar(s.color); }),
-            borderColor: cssVar("--base"),
-            borderWidth: 3,
-          }],
+          datasets: [
+            {
+              data: spec.series.map(function (s) {
+                return s.data[0];
+              }),
+              backgroundColor: spec.series.map(function (s) {
+                return cssVar(s.color);
+              }),
+              borderColor: cssVar("--base"),
+              borderWidth: 3,
+            },
+          ],
         },
         options: {
-          responsive: true, maintainAspectRatio: false, animation: animation, cutout: "68%",
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: animation,
+          cutout: "68%",
           plugins: { legend: Object.assign({ position: "bottom" }, legend), tooltip: tooltip },
         },
       });
     }
 
     var scales = {
-      x: { ticks: { color: text, font: font, maxRotation: 0, autoSkipPadding: 16 }, grid: { color: grid, drawTicks: false }, border: { color: grid } },
-      y: { beginAtZero: true, ticks: { color: text, font: font, precision: 0 }, grid: { color: grid, drawTicks: false }, border: { display: false } },
+      x: {
+        ticks: { color: text, font: font, maxRotation: 0, autoSkipPadding: 16 },
+        grid: { color: grid, drawTicks: false },
+        border: { color: grid },
+      },
+      y: {
+        beginAtZero: true,
+        ticks: { color: text, font: font, precision: 0 },
+        grid: { color: grid, drawTicks: false },
+        border: { display: false },
+      },
     };
-    var options = { responsive: true, maintainAspectRatio: false, animation: animation, scales: scales, plugins: { legend: legend, tooltip: tooltip } };
+    var options = {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: animation,
+      scales: scales,
+      plugins: { legend: legend, tooltip: tooltip },
+    };
 
     if (spec.kind === "bars") {
       return new Chart(canvas, {
         type: "bar",
-        data: { labels: spec.labels, datasets: spec.series.map(function (s) {
-          return { label: s.name, data: s.data, backgroundColor: alpha(cssVar(s.color), 0.7), borderRadius: 3, maxBarThickness: 18 };
-        }) },
+        data: {
+          labels: spec.labels,
+          datasets: spec.series.map(function (s) {
+            return {
+              label: s.name,
+              data: s.data,
+              backgroundColor: alpha(cssVar(s.color), 0.7),
+              borderRadius: 3,
+              maxBarThickness: 18,
+            };
+          }),
+        },
         options: options,
       });
     }
@@ -134,10 +191,23 @@
     options.interaction = { mode: "index", intersect: false };
     return new Chart(canvas, {
       type: "line",
-      data: { labels: spec.labels, datasets: spec.series.map(function (s) {
-        var c = cssVar(s.color);
-        return { label: s.name, data: s.data, borderColor: c, backgroundColor: alpha(c, 0.12), fill: true, tension: 0.35, pointRadius: 0, pointHoverRadius: 4, borderWidth: 2 };
-      }) },
+      data: {
+        labels: spec.labels,
+        datasets: spec.series.map(function (s) {
+          var c = cssVar(s.color);
+          return {
+            label: s.name,
+            data: s.data,
+            borderColor: c,
+            backgroundColor: alpha(c, 0.12),
+            fill: true,
+            tension: 0.35,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            borderWidth: 2,
+          };
+        }),
+      },
       options: options,
     });
   }
@@ -152,22 +222,33 @@
     });
     scope.querySelectorAll("canvas[data-chart]").forEach(function (canvas) {
       if (charts.has(canvas)) return;
-      try { charts.set(canvas, build(canvas)); } catch (err) { console.error("chart", err); }
+      try {
+        charts.set(canvas, build(canvas));
+      } catch (err) {
+        console.error("chart", err);
+      }
     });
   }
-  window.addEventListener("load", function () { renderCharts(document); });
+  window.addEventListener("load", function () {
+    renderCharts(document);
+  });
 
   // Keep expanded runs and jobs expanded, and loaded logs in place, when a live region re-renders.
   var liveRegions = ["feed", "dash", "run-detail"];
   var open = new Set();
   var logs = new Map();
   var logScroll = new Map();
-  document.addEventListener("toggle", function (e) {
-    var d = e.target;
-    if (!(d instanceof HTMLDetailsElement) || !d.id) return;
-    if (!d.classList.contains("run") && !d.classList.contains("job")) return;
-    if (d.open) open.add(d.id); else open.delete(d.id);
-  }, true);
+  document.addEventListener(
+    "toggle",
+    function (e) {
+      var d = e.target;
+      if (!(d instanceof HTMLDetailsElement) || !d.id) return;
+      if (!d.classList.contains("run") && !d.classList.contains("job")) return;
+      if (d.open) open.add(d.id);
+      else open.delete(d.id);
+    },
+    true,
+  );
 
   function jumpToError(log) {
     var line = log.querySelector(".l-error");
@@ -207,7 +288,8 @@
       var log = target.querySelector(".log");
       if (!log) return;
       var pre = log.querySelector(".log-pre");
-      if (log.querySelector(".l-error")) jumpToError(log); else if (pre) pre.scrollTop = pre.scrollHeight;
+      if (log.querySelector(".l-error")) jumpToError(log);
+      else if (pre) pre.scrollTop = pre.scrollHeight;
     }
   });
 
@@ -224,6 +306,10 @@
     el.classList.toggle("off", state === "off");
     el.querySelector(".live-text").textContent = text;
   }
-  document.addEventListener("htmx:sseOpen", function () { setLive("on", "Live"); });
-  document.addEventListener("htmx:sseError", function () { setLive("off", "Reconnecting"); });
+  document.addEventListener("htmx:sseOpen", function () {
+    setLive("on", "Live");
+  });
+  document.addEventListener("htmx:sseError", function () {
+    setLive("off", "Reconnecting");
+  });
 })();

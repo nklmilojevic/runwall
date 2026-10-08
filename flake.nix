@@ -20,6 +20,9 @@
             gopls
             golangci-lint
             just
+            lefthook
+            oxfmt
+            zizmor
             sqlite
             gh
             _1password-cli
@@ -31,6 +34,8 @@
           # templ comes from go.mod (`go tool templ`) so local builds and CI use the same version.
           shellHook = ''
             export GOTOOLCHAIN=local
+            # Install the git hooks from .lefthook.toml (formatting, zizmor, checks before push).
+            if [ -d .git ]; then lefthook install >/dev/null; fi
           '';
         };
       });

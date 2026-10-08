@@ -1,7 +1,7 @@
 # Run `just` to list recipes. Enter the dev shell first with `nix develop` (or direnv).
 
-# 1Password references for `just run`.
-op_env := env("OP_ENV", "secrets.op")
+# `just run` reads the settings from .env (copy env.example to start).
+set dotenv-load
 
 default:
     @just --list
@@ -38,9 +38,9 @@ check: generate
 demo: build
     ./bin/runwall --demo
 
-# Start with the real GitHub App; secrets come from 1Password.
+# Start with the real GitHub App; settings come from .env or the environment.
 run: build
-    op run --env-file={{ op_env }} -- ./bin/runwall
+    ./bin/runwall
 
 # Expose only /webhook through Cloudflare Tunnel (see deploy/cloudflared/config.example.yml).
 tunnel:
