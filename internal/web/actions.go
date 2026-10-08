@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -26,6 +27,37 @@ var actionDone = map[runActionKind]string{
 	actionRerun:       "Re-run requested for all jobs.",
 	actionRerunFailed: "Re-run requested for the failed jobs.",
 	actionCancel:      "Cancellation requested.",
+}
+
+// cancelRun asks GitHub to cancel a run. A run whose jobs were never created can sit
+// queued forever, and GitHub answers a normal cancel for it with 409 Conflict. Only then,
+// and only if GitHub confirms the run has no jobs, it force-cancels: force-cancel skips
+// always() steps, and with no jobs there are none to skip.
+func cancelRun(ctx context.Context, gh *github.Client, owner, repo string, id int64) (forced bool, err error) {
+	_, err = gh.Actions.CancelWorkflowRunByID(ctx, owner, repo, id)
+	var ge *github.ErrorResponse
+	if !errors.As(err, &ge) || ge.Response.StatusCode != http.StatusConflict {
+		return false, accepted(err)
+	}
+	jobs, _, jerr := gh.Actions.ListWorkflowJobs(ctx, owner, repo, id, &github.ListWorkflowJobsOptions{ListOptions: github.ListOptions{PerPage: 1}})
+	if jerr != nil || jobs.GetTotalCount() > 0 {
+		return false, err
+	}
+	req, rerr := gh.NewRequest(ctx, http.MethodPost, fmt.Sprintf("repos/%v/%v/actions/runs/%v/force-cancel", owner, repo, id), nil)
+	if rerr != nil {
+		return false, rerr
+	}
+	_, err = gh.Do(req, nil)
+	return true, accepted(err)
+}
+
+// accepted treats 202 Accepted, which go-github reports as an error, as success.
+func accepted(err error) error {
+	var a *github.AcceptedError
+	if errors.As(err, &a) {
+		return nil
+	}
+	return err
 }
 
 // githubMessage turns a GitHub API error into something worth showing.
@@ -99,26 +131,26 @@ func (s *Server) runAction(kind runActionKind) handler {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		action, done := string(kind), actionDone[kind]
 		switch kind {
 		case actionRerun:
 			_, err = gh.Actions.RerunWorkflowByID(ctx, repo.Owner, repo.Name, id)
 		case actionRerunFailed:
 			_, err = gh.Actions.RerunFailedJobsByID(ctx, repo.Owner, repo.Name, id)
 		case actionCancel:
-			_, err = gh.Actions.CancelWorkflowRunByID(ctx, repo.Owner, repo.Name, id)
+			var forced bool
+			if forced, err = cancelRun(ctx, gh, repo.Owner, repo.Name, id); forced {
+				action, done = "force-cancel", "Cancellation forced: GitHub never created jobs for this run."
+			}
 		}
-		var accepted *github.AcceptedError // cancel answers 202 Accepted
-		if errors.As(err, &accepted) {
-			err = nil
-		}
-		s.audit(ctx, v, string(kind), repo.FullName, id, err)
+		s.audit(ctx, v, action, repo.FullName, id, err)
 		if err != nil {
 			toast(w, "error", githubMessage(err))
 			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
 		s.refreshSoon(id)
-		toast(w, "ok", actionDone[kind])
+		toast(w, "ok", done)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
