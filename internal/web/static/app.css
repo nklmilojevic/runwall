@@ -141,11 +141,14 @@ a {
   border-right: 1px solid var(--surface0);
 }
 
+/* Same height as .topbar, so the two bottom borders form one line. */
 .brand {
   display: flex;
+  flex: none;
   align-items: center;
   gap: 12px;
-  padding: 18px 18px 16px;
+  height: 58px;
+  padding: 0 18px;
   color: var(--text);
   text-decoration: none;
   border-bottom: 1px solid var(--surface0);
@@ -1577,6 +1580,7 @@ fieldset.field {
 }
 
 .login-card .brand {
+  height: auto;
   padding: 0;
   border: 0;
 }
