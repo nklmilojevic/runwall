@@ -32,6 +32,7 @@ type fakeSyncer struct {
 	log       string
 	logErr    error
 	annErr    error
+	wf        string // workflow file contents; empty means no Contents permission
 	st        *store.Store
 }
 
@@ -63,6 +64,9 @@ func (f *fakeSyncer) Budget(context.Context) (ghapp.Rate, bool) {
 	return ghapp.Rate{Limit: 12500, Remaining: 1200, Reset: now.Add(20 * time.Minute)}, true
 }
 func (f *fakeSyncer) WorkflowFile(context.Context, int64) (string, error) {
+	if f.wf != "" {
+		return f.wf, nil
+	}
 	return "", syncer.ErrPermission{Permission: "Contents: read"}
 }
 func (f *fakeSyncer) Annotations(context.Context, int64) ([]syncer.Annotation, error) {
@@ -463,5 +467,52 @@ func TestDashboardFilterIsRemembered(t *testing.T) {
 		if c.Name == dashCookie && c.MaxAge >= 0 {
 			t.Error("clear should delete the cookie")
 		}
+	}
+}
+
+func TestRunPageGraphAndLinks(t *testing.T) {
+	e := newDemo(t)
+	_, body := get(t, e.srv.URL+"/runs/1006", nil, nil)
+	if strings.Contains(body, `class="gnode`) {
+		t.Error("no graph without the workflow file")
+	}
+	for _, want := range []string{"https://github.com/", "/commit/", `href="/runs?actor=`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("run page: missing %q", want)
+		}
+	}
+
+	e.sync.wf = `jobs:
+  lint: {runs-on: x}
+  test:
+    strategy: {matrix: {os: [a, b]}}
+    runs-on: x
+  build: {needs: [lint, test], runs-on: x}
+  deploy: {needs: build, runs-on: x}
+`
+	_, body = get(t, e.srv.URL+"/runs/1005", nil, nil)
+	for _, want := range []string{`class="gnode`, "Matrix: test", "deploy", "<path d="} {
+		if !strings.Contains(body, want) {
+			t.Errorf("graph: missing %q", want)
+		}
+	}
+	e.sync.wf = "jobs: {}"
+	if _, body = get(t, e.srv.URL+"/runs/1005", nil, nil); !strings.Contains(body, "Matrix: test") {
+		t.Error("parsed workflow files are cached per commit")
+	}
+}
+
+func TestFilterByUser(t *testing.T) {
+	e := newDemo(t)
+	_, body := get(t, e.srv.URL+"/runs?actor=hubot", nil, map[string]string{"HX-Request": "true", "HX-Target": "feed"})
+	if !strings.Contains(body, "hubot") || strings.Contains(body, "monalisa") || strings.Contains(body, "dependabot") {
+		t.Error("runs page user filter not applied")
+	}
+	if _, body = get(t, e.srv.URL+"/runs?actor=dependabot%5Bbot%5D", nil, map[string]string{"HX-Request": "true", "HX-Target": "feed"}); !strings.Contains(body, "dependabot[bot]") {
+		t.Error("picking a bot should show its runs even with bots hidden")
+	}
+	_, body = get(t, e.srv.URL+"/?actor=monalisa", nil, map[string]string{"HX-Request": "true", "HX-Target": "dash"})
+	if strings.Contains(body, "hubot") || !strings.Contains(body, "monalisa") {
+		t.Error("dashboard user filter not applied")
 	}
 }

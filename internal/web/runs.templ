@@ -122,6 +122,7 @@ templ filters(v pageView) {
 		@selectField("Org", "org", v.Filter.Owner, v.Options.Owners, nil)
 		@selectField("Repo", "repo", v.Filter.Repo, v.Options.Repos, nil)
 		@selectField("Event", "event", v.Filter.Event, v.Options.Events, nil)
+		@selectField("User", "actor", v.Filter.Actor, v.Options.Actors, nil)
 		@selectField("Status", "status", string(v.Filter.Status), statusOptions, statusLabels)
 		<label class="field">
 			<span>Branch</span>

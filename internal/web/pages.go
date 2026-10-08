@@ -14,6 +14,7 @@ import (
 	"github.com/nklmilojevic/runwall/internal/metrics"
 	"github.com/nklmilojevic/runwall/internal/scoring"
 	"github.com/nklmilojevic/runwall/internal/store"
+	"github.com/nklmilojevic/runwall/internal/wfgraph"
 )
 
 // Sign-in
@@ -76,7 +77,7 @@ func (s *Server) kiosk(w http.ResponseWriter, r *http.Request) {
 
 type dashView struct {
 	shell
-	Filter   store.RepoFilter
+	Filter   store.Selection
 	Options  dashOptions
 	Sum      metrics.Summary
 	Active   []store.FeedRun
@@ -86,7 +87,7 @@ type dashView struct {
 }
 
 type dashOptions struct {
-	Owners, Repos, Topics []string
+	Owners, Repos, Topics, Actors []string
 }
 
 type costInfo struct {
@@ -110,21 +111,21 @@ func (s *Server) summary(ctx context.Context, sc store.Scope, p metrics.Period, 
 // dashCookie remembers the last dashboard filter, so a plain visit to / opens it again.
 const dashCookie = "dash"
 
-var dashKeys = []string{"org", "repo", "topic"}
+var dashKeys = []string{"org", "repo", "topic", "actor"}
 
-func parseDashFilter(q url.Values) store.RepoFilter {
+func parseDashFilter(q url.Values) store.Selection {
 	clean := func(vs []string) []string {
 		vs = slices.DeleteFunc(slices.Clone(vs), func(v string) bool { return v == "" })
 		slices.Sort(vs)
 		return slices.Compact(vs)
 	}
-	return store.RepoFilter{Owners: clean(q["org"]), Repos: clean(q["repo"]), Topics: clean(q["topic"])}
+	return store.Selection{Owners: clean(q["org"]), Repos: clean(q["repo"]), Topics: clean(q["topic"]), Actors: clean(q["actor"])}
 }
 
 // dashQuery encodes a filter as the dashboard's query string, without the leading "?".
-func dashQuery(f store.RepoFilter) string {
+func dashQuery(f store.Selection) string {
 	q := url.Values{}
-	for i, vs := range [][]string{f.Owners, f.Repos, f.Topics} {
+	for i, vs := range [][]string{f.Owners, f.Repos, f.Topics, f.Actors} {
 		for _, v := range vs {
 			q.Add(dashKeys[i], v)
 		}
@@ -132,7 +133,7 @@ func dashQuery(f store.RepoFilter) string {
 	return q.Encode()
 }
 
-func dashURL(f store.RepoFilter) string {
+func dashURL(f store.Selection) string {
 	if f.Empty() {
 		return "/"
 	}
@@ -141,7 +142,7 @@ func dashURL(f store.RepoFilter) string {
 
 // dashFilter reads the filter from the URL, or from the cookie when the URL has none.
 // A URL with filter keys, or with f=1 for an explicitly empty filter, replaces the cookie.
-func dashFilter(w http.ResponseWriter, r *http.Request) (f store.RepoFilter, fromCookie bool) {
+func dashFilter(w http.ResponseWriter, r *http.Request) (f store.Selection, fromCookie bool) {
 	q := r.URL.Query()
 	explicit := q.Has("f") || slices.ContainsFunc(dashKeys, q.Has)
 	if !explicit {
@@ -169,12 +170,16 @@ func dashFilter(w http.ResponseWriter, r *http.Request) (f store.RepoFilter, fro
 
 // dashOptionsFor lists what the viewer can filter by. Selected values stay listed even when no
 // longer visible, so they can be cleared.
-func (s *Server) dashOptionsFor(ctx context.Context, sc store.Scope, f store.RepoFilter) (dashOptions, error) {
+func (s *Server) dashOptionsFor(ctx context.Context, sc store.Scope, f store.Selection) (dashOptions, error) {
 	repos, err := s.Store.VisibleRepos(ctx, sc)
 	if err != nil {
 		return dashOptions{}, err
 	}
-	o := dashOptions{Owners: f.Owners, Repos: f.Repos, Topics: f.Topics}
+	fo, err := s.Store.FilterOptions(ctx, sc)
+	if err != nil {
+		return dashOptions{}, err
+	}
+	o := dashOptions{Owners: f.Owners, Repos: f.Repos, Topics: f.Topics, Actors: append(slices.Clone(f.Actors), fo.Actors...)}
 	for _, r := range repos {
 		if r.Archived {
 			continue
@@ -183,7 +188,7 @@ func (s *Server) dashOptionsFor(ctx context.Context, sc store.Scope, f store.Rep
 		o.Repos = append(o.Repos, r.FullName)
 		o.Topics = append(o.Topics, r.Topics...)
 	}
-	for _, vs := range []*[]string{&o.Owners, &o.Repos, &o.Topics} {
+	for _, vs := range []*[]string{&o.Owners, &o.Repos, &o.Topics, &o.Actors} {
 		*vs = slices.Clone(*vs)
 		slices.SortFunc(*vs, func(a, b string) int { return strings.Compare(strings.ToLower(a), strings.ToLower(b)) })
 		*vs = slices.Compact(*vs)
@@ -257,11 +262,12 @@ func parseFilter(q url.Values) store.FeedFilter {
 		Repo:         q.Get("repo"),
 		Branch:       q.Get("branch"),
 		Event:        q.Get("event"),
+		Actor:        q.Get("actor"),
 		Status:       store.StatusFilter(q.Get("status")),
 		DefaultOnly:  on("default"),
 		ShowArchived: on("archived"),
 		ShowForks:    on("forks"),
-		ShowBots:     on("bots"),
+		ShowBots:     on("bots") || q.Get("actor") != "", // picking a bot means showing it
 		Limit:        limit,
 	}
 }
@@ -338,6 +344,7 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request, v *auth.Viewer) {
 
 type runView struct {
 	shell
+	Graph     *wfgraph.Graph
 	Run       store.FeedRun
 	Repo      store.Repo
 	Jobs      []store.Job
@@ -391,6 +398,7 @@ func (s *Server) runDetail(w http.ResponseWriter, r *http.Request, v *auth.Viewe
 		}
 	}
 	rv.Jobs = jobs[id]
+	rv.Graph = s.runGraph(ctx, rv)
 	rv.CanAct = v.CanAct(ctx, run.RepoID)
 	if isHTMX(r) && r.Header.Get("HX-Target") == "run-detail" {
 		s.render(w, r, runDetailBody(rv))

@@ -66,6 +66,9 @@ type Server struct {
 
 	refreshMu sync.Mutex
 	refreshed map[int64]time.Time
+
+	graphMu sync.Mutex
+	graphs  map[string]graphEntry
 }
 
 // Routes registers the UI. The webhook and MCP endpoints are mounted separately.

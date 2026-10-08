@@ -39,14 +39,33 @@ on:
   pull_request:
 
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: golangci-lint run ./...
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - run: go test ./...
+  build:
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    steps:
+      - run: go build ./...
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - run: ./deploy.sh
 `, nil
 }
 

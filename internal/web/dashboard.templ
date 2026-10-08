@@ -31,15 +31,22 @@ func pickerSummary(selected []string) string {
 	return strconv.Itoa(len(selected)) + " selected"
 }
 
-// runsLink carries a single-org or single-repo dashboard filter over to the runs page, which takes one of each.
-func runsLink(f store.RepoFilter) string {
-	if len(f.Repos) == 1 && len(f.Owners) == 0 && len(f.Topics) == 0 {
-		return "/runs?repo=" + url.QueryEscape(f.Repos[0])
+// runsLink carries the dashboard filter over to the runs page, which takes one org, repo
+// and user. A filter it can't express (several values, or topics) links to all runs.
+func runsLink(f store.Selection) string {
+	if len(f.Topics) > 0 || len(f.Owners) > 1 || len(f.Repos) > 1 || len(f.Actors) > 1 {
+		return "/runs"
 	}
-	if len(f.Owners) == 1 && len(f.Repos) == 0 && len(f.Topics) == 0 {
-		return "/runs?org=" + url.QueryEscape(f.Owners[0])
+	q := url.Values{}
+	for key, vs := range map[string][]string{"org": f.Owners, "repo": f.Repos, "actor": f.Actors} {
+		if len(vs) == 1 {
+			q.Set(key, vs[0])
+		}
 	}
-	return "/runs"
+	if len(q) == 0 {
+		return "/runs"
+	}
+	return "/runs?" + q.Encode()
 }
 
 templ dashFilters(d dashView) {
@@ -50,6 +57,7 @@ templ dashFilters(d dashView) {
 		if len(d.Options.Topics) > 0 {
 			@picker("Topic", "topic", d.Options.Topics, d.Filter.Topics, len(d.Options.Topics) > 8)
 		}
+		@picker("User", "actor", d.Options.Actors, d.Filter.Actors, true)
 		<a class="btn btn-sm" href="/?f=1" data-clear hidden?={ d.Filter.Empty() }>Clear</a>
 		<noscript><button type="submit" class="btn btn-sm">Apply</button></noscript>
 	</form>

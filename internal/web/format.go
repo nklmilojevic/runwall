@@ -90,6 +90,8 @@ func (s state) label() string {
 		return "Waiting for approval"
 	case "stuck":
 		return "Stuck in queue"
+	case "pending":
+		return "Not started yet"
 	}
 	return "Queued"
 }
@@ -185,6 +187,31 @@ func branchLabel(r store.FeedRun) string {
 		return "#" + strconv.Itoa(r.PRNumber)
 	}
 	return r.HeadBranch
+}
+
+// repoWebURL is the repository on GitHub. It comes from the run's own URL, so the host is
+// right on GitHub Enterprise too.
+func repoWebURL(r store.FeedRun) string {
+	if i := strings.Index(r.HTMLURL, "/actions/runs/"); i > 0 {
+		return r.HTMLURL[:i]
+	}
+	return "https://github.com/" + r.Owner + "/" + r.RepoName
+}
+
+func prURL(r store.FeedRun) string {
+	return repoWebURL(r) + "/pull/" + strconv.Itoa(r.PRNumber)
+}
+
+func branchURL(r store.FeedRun) string {
+	parts := strings.Split(r.HeadBranch, "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	return repoWebURL(r) + "/tree/" + strings.Join(parts, "/")
+}
+
+func commitURL(r store.FeedRun) string {
+	return repoWebURL(r) + "/commit/" + r.HeadSHA
 }
 
 func shortSHA(sha string) string {
