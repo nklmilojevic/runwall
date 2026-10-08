@@ -319,3 +319,23 @@ func (s *Store) FilterOptions(ctx context.Context, sc Scope) (FilterOptions, err
 	}
 	return fo, nil
 }
+
+// ActorOwners maps each user who triggered a run in the scope to the accounts owning those repos.
+func (s *Store) ActorOwners(ctx context.Context, sc Scope) (map[string][]string, error) {
+	cl, args := sc.clause()
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT r.actor_login, p.owner FROM runs r JOIN repos p ON p.id = r.repo_id
+		WHERE r.actor_login != '' AND `+cl+` ORDER BY p.owner`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var actor, owner string
+		if err := rows.Scan(&actor, &owner); err != nil {
+			return nil, err
+		}
+		out[actor] = append(out[actor], owner)
+	}
+	return out, rows.Err()
+}

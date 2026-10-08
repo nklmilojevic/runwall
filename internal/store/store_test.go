@@ -447,3 +447,23 @@ func TestActorSelection(t *testing.T) {
 		t.Fatalf("actor options: %v", opts.Actors)
 	}
 }
+
+func TestActorOwners(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	seedRepo(t, s, Repo{ID: 1, Owner: "acme", Name: "api"})
+	seedRepo(t, s, Repo{ID: 2, Owner: "other", Name: "web"})
+	mustUpsertRun(t, s, Run{ID: 1, RepoID: 1, RunAttempt: 1, ActorLogin: "ann", CreatedAt: t0, UpdatedAt: t0})
+	mustUpsertRun(t, s, Run{ID: 2, RepoID: 2, RunAttempt: 1, ActorLogin: "ann", CreatedAt: t0, UpdatedAt: t0})
+	mustUpsertRun(t, s, Run{ID: 3, RepoID: 2, RunAttempt: 1, ActorLogin: "bob", CreatedAt: t0, UpdatedAt: t0})
+	got, err := s.ActorOwners(ctx, Scope{All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got["ann"], []string{"acme", "other"}) || !slices.Equal(got["bob"], []string{"other"}) {
+		t.Fatalf("actor owners: %v", got)
+	}
+	if got, _ = s.ActorOwners(ctx, Scope{Owners: []string{"acme"}}); len(got) != 1 || len(got["bob"]) != 0 {
+		t.Fatalf("scoped actor owners: %v", got)
+	}
+}
