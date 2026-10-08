@@ -28,7 +28,7 @@ type MetricRun struct {
 
 // MetricRuns returns runs that started within the scope since the given time.
 func (s *Store) MetricRuns(ctx context.Context, sc Scope, since time.Time) ([]MetricRun, error) {
-	cl, args := sc.clause()
+	cl, args := sc.runClause()
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT r.id, r.repo_id, r.workflow_id, p.owner, p.full_name, p.default_branch, r.workflow_name, r.workflow_path,
 			r.head_branch, r.event, r.status, r.conclusion, r.run_attempt,
@@ -68,7 +68,7 @@ type CostJob struct {
 
 // CostJobs returns finished jobs in the scope that completed since the given time, across all attempts.
 func (s *Store) CostJobs(ctx context.Context, sc Scope, since time.Time) ([]CostJob, error) {
-	cl, args := sc.clause()
+	cl, args := sc.runClause()
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT j.run_id, r.repo_id, r.workflow_id, p.private, j.labels, j.runner_name, j.started_at, j.completed_at
 		FROM jobs j JOIN runs r ON r.id = j.run_id JOIN repos p ON p.id = r.repo_id

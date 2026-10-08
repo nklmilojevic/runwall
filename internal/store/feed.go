@@ -19,24 +19,35 @@ const (
 
 // Scope limits what a viewer can see. The zero value sees nothing.
 type Scope struct {
-	All    bool       // demo mode and internal callers
-	UserID int64      // a signed-in user: repos in user_repos
-	Owners []string   // a kiosk link: repos owned by these accounts
-	Only   RepoFilter // narrows any of the above
+	All    bool      // demo mode and internal callers
+	UserID int64     // a signed-in user: repos in user_repos
+	Owners []string  // a kiosk link: repos owned by these accounts
+	Only   Selection // narrows any of the above
 }
 
-// RepoFilter keeps repos that match every non-empty list. Values within a list are alternatives.
-type RepoFilter struct {
+// Selection keeps what matches every non-empty list. Values within a list are alternatives.
+type Selection struct {
 	Owners []string
 	Repos  []string // full names
 	Topics []string
+	Actors []string // who triggered a run; applies to runs, not repos
 }
 
-func (f RepoFilter) Empty() bool {
-	return len(f.Owners) == 0 && len(f.Repos) == 0 && len(f.Topics) == 0
+func (f Selection) Empty() bool {
+	return len(f.Owners) == 0 && len(f.Repos) == 0 && len(f.Topics) == 0 && len(f.Actors) == 0
 }
 
-// clause returns a SQL condition on the repos table aliased as p.
+// runClause is clause plus the parts of the selection that apply to runs, aliased as r.
+func (sc Scope) runClause() (string, []any) {
+	cl, args := sc.clause()
+	if len(sc.Only.Actors) > 0 {
+		cl += " AND r.actor_login IN (" + placeholders(len(sc.Only.Actors)) + ")"
+		args = appendStrings(args, sc.Only.Actors)
+	}
+	return cl, args
+}
+
+// clause returns a SQL condition on the repos table aliased as p. It ignores Only.Actors.
 func (sc Scope) clause() (string, []any) {
 	cl, args := sc.base()
 	if len(sc.Only.Owners) > 0 {
@@ -92,6 +103,7 @@ type FeedFilter struct {
 	WorkflowID   int64
 	Branch       string
 	Event        string
+	Actor        string
 	Status       StatusFilter
 	DefaultOnly  bool
 	ShowArchived bool
@@ -125,7 +137,7 @@ const stuckExpr = `(
 )`
 
 func visibilityClause(f FeedFilter) (string, []any) {
-	cl, args := f.Scope.clause()
+	cl, args := f.Scope.runClause()
 	where := []string{cl}
 	if !f.ShowArchived {
 		where = append(where, `p.archived = 0`)
@@ -143,6 +155,10 @@ func visibilityClause(f FeedFilter) (string, []any) {
 	if f.Repo != "" {
 		where = append(where, `p.full_name = ?`)
 		args = append(args, f.Repo)
+	}
+	if f.Actor != "" {
+		where = append(where, `r.actor_login = ?`)
+		args = append(args, f.Actor)
 	}
 	return strings.Join(where, " AND "), args
 }
@@ -268,6 +284,7 @@ type FilterOptions struct {
 	Owners []string
 	Repos  []string
 	Events []string
+	Actors []string
 }
 
 func (s *Store) FilterOptions(ctx context.Context, sc Scope) (FilterOptions, error) {
@@ -280,6 +297,7 @@ func (s *Store) FilterOptions(ctx context.Context, sc Scope) (FilterOptions, err
 		{`SELECT DISTINCT p.owner FROM repos p WHERE ` + cl + ` ORDER BY p.owner COLLATE NOCASE`, &fo.Owners},
 		{`SELECT p.full_name FROM repos p WHERE p.archived = 0 AND ` + cl + ` ORDER BY p.full_name COLLATE NOCASE`, &fo.Repos},
 		{`SELECT DISTINCT r.event FROM runs r JOIN repos p ON p.id = r.repo_id WHERE r.event != '' AND ` + cl + ` ORDER BY r.event`, &fo.Events},
+		{`SELECT DISTINCT r.actor_login FROM runs r JOIN repos p ON p.id = r.repo_id WHERE r.actor_login != '' AND ` + cl + ` ORDER BY r.actor_login COLLATE NOCASE`, &fo.Actors},
 	}
 	for _, q := range queries {
 		rows, err := s.db.QueryContext(ctx, q.q, args...)

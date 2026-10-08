@@ -1,9 +1,11 @@
 package web
 
 import (
+	"net/url"
 	"strconv"
 
 	"github.com/nklmilojevic/runwall/internal/store"
+	"github.com/nklmilojevic/runwall/internal/wfgraph"
 )
 
 func runIDStr(r store.FeedRun) string { return strconv.FormatInt(r.ID, 10) }
@@ -48,9 +50,19 @@ templ runDetailBody(rv runView) {
 		</div>
 		<dl class="facts">
 			<div><dt>Repository</dt><dd><a href={ templ.URL(repoHref(rv.Repo.ID)) }>{ rv.Repo.FullName }</a></dd></div>
-			<div><dt>Branch</dt><dd class="mono">{ branchLabel(rv.Run) }</dd></div>
-			<div><dt>Commit</dt><dd class="mono">{ shortSHA(rv.Run.HeadSHA) }</dd></div>
-			<div><dt>Triggered by</dt><dd>{ rv.Run.ActorLogin } · { rv.Run.Event }</dd></div>
+			<div>
+				<dt>Branch</dt>
+				<dd class="mono">
+					if rv.Run.PRNumber != 0 {
+						<a href={ templ.URL(prURL(rv.Run)) } target="_blank" rel="noopener" title="Open the pull request on GitHub">#{ strconv.Itoa(rv.Run.PRNumber) }</a>
+					}
+					if rv.Run.HeadBranch != "" {
+						<a class={ templ.KV("muted", rv.Run.PRNumber != 0) } href={ templ.URL(branchURL(rv.Run)) } target="_blank" rel="noopener" title="Open the branch on GitHub">{ rv.Run.HeadBranch }</a>
+					}
+				</dd>
+			</div>
+			<div><dt>Commit</dt><dd class="mono"><a href={ templ.URL(commitURL(rv.Run)) } target="_blank" rel="noopener" title="Open the commit on GitHub">{ shortSHA(rv.Run.HeadSHA) }</a></dd></div>
+			<div><dt>Triggered by</dt><dd><a href={ templ.URL("/runs?actor=" + url.QueryEscape(rv.Run.ActorLogin)) } title={ "Runs by " + rv.Run.ActorLogin }>{ rv.Run.ActorLogin }</a> · { rv.Run.Event }</dd></div>
 			<div><dt>Started</dt><dd>{ ago(rv.Run.QueuedSince(), rv.Now) }</dd></div>
 			<div><dt>Duration</dt><dd class="mono">{ runTiming(rv.Run, rv.Now) }</dd></div>
 		</dl>
@@ -82,10 +94,65 @@ templ runDetailBody(rv runView) {
 			</a>
 		</div>
 	</section>
+	if rv.Graph != nil {
+		@runGraph(rv)
+	}
 	<section class="card">
 		<h2 class="card-title">Jobs</h2>
 		<div class="jobs jobs-detail">
 			@jobList(rv.Jobs, rv.Now, rv.Threshold, "", rv.JobsErr, rv.CanAct)
 		</div>
 	</section>
+}
+
+templ runGraph(rv runView) {
+	<section class="card graph-card">
+		<h2 class="card-title">
+			{ workflowFileName(rv.Run) }
+			<small class="muted">on: { rv.Run.Event }</small>
+		</h2>
+		<div class="graph-scroll">
+			<div class="graph" style={ templ.SafeCSS(graphSize(rv.Graph)) }>
+				<svg class="graph-edges" width={ strconv.Itoa(rv.Graph.W) } height={ strconv.Itoa(rv.Graph.H) } aria-hidden="true">
+					for _, e := range rv.Graph.Edges {
+						<path d={ e.Path() }></path>
+					}
+				</svg>
+				for _, n := range rv.Graph.Nodes {
+					@graphNode(n, state(n.State(rv.Run.Status != "completed")))
+				}
+			</div>
+		</div>
+	</section>
+}
+
+templ graphNode(n *wfgraph.Node, st state) {
+	if len(n.Jobs) > 0 {
+		<a class={ "gnode", "s-" + string(st), templ.KV("gnode-matrix", n.Matrix) } style={ templ.SafeCSS(nodeStyle(n)) } href={ templ.URL("#job-" + strconv.FormatInt(n.Jobs[0].ID, 10)) } title={ st.label() }>
+			@graphNodeBody(n, st)
+		</a>
+	} else {
+		<div class={ "gnode", "s-" + string(st), templ.KV("gnode-matrix", n.Matrix) } style={ templ.SafeCSS(nodeStyle(n)) } title={ st.label() }>
+			@graphNodeBody(n, st)
+		</div>
+	}
+}
+
+templ graphNodeBody(n *wfgraph.Node, st state) {
+	if n.Matrix {
+		<span class="gnode-tag">{ nodeLabel(n) }</span>
+	}
+	<span class="gnode-main">
+		<span class="gdot" aria-hidden="true">{ st.glyph() }</span>
+		<span class="sr">{ st.label() }</span>
+		if n.Matrix {
+			if len(n.Jobs) == 0 {
+				<span>Not started</span>
+			} else {
+				<span>{ strconv.Itoa(n.Done()) }/{ strconv.Itoa(len(n.Jobs)) } jobs completed</span>
+			}
+		} else {
+			<span class="gnode-name">{ nodeLabel(n) }</span>
+		}
+	</span>
 }

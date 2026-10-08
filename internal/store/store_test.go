@@ -380,7 +380,7 @@ func TestRepoTopicsAndFilter(t *testing.T) {
 		t.Fatalf("partial payload dropped topics: %+v", r.Topics)
 	}
 
-	repos := func(f RepoFilter) []int64 {
+	repos := func(f Selection) []int64 {
 		feed, err := s.Feed(ctx, FeedFilter{Scope: Scope{All: true, Only: f}}, t0)
 		if err != nil {
 			t.Fatal(err)
@@ -393,15 +393,15 @@ func TestRepoTopicsAndFilter(t *testing.T) {
 		return ids
 	}
 	cases := []struct {
-		f    RepoFilter
+		f    Selection
 		want []int64
 	}{
-		{RepoFilter{}, []int64{1, 2, 3}},
-		{RepoFilter{Topics: []string{"go"}}, []int64{1}}, // whole topics only, not go-tools
-		{RepoFilter{Topics: []string{"go", "frontend"}}, []int64{1, 2}},
-		{RepoFilter{Owners: []string{"acme"}}, []int64{1, 2}},
-		{RepoFilter{Repos: []string{"acme/web", "other/go-tools"}}, []int64{2, 3}},
-		{RepoFilter{Owners: []string{"acme"}, Repos: []string{"other/go-tools"}}, nil},
+		{Selection{}, []int64{1, 2, 3}},
+		{Selection{Topics: []string{"go"}}, []int64{1}}, // whole topics only, not go-tools
+		{Selection{Topics: []string{"go", "frontend"}}, []int64{1, 2}},
+		{Selection{Owners: []string{"acme"}}, []int64{1, 2}},
+		{Selection{Repos: []string{"acme/web", "other/go-tools"}}, []int64{2, 3}},
+		{Selection{Owners: []string{"acme"}, Repos: []string{"other/go-tools"}}, nil},
 	}
 	for _, c := range cases {
 		if got := repos(c.f); !slices.Equal(got, c.want) {
@@ -411,7 +411,7 @@ func TestRepoTopicsAndFilter(t *testing.T) {
 
 	// The filter narrows a user's scope; it never widens it.
 	s.SetUserRepos(ctx, 42, []UserRepo{{RepoID: 1}})
-	runs, _ := s.MetricRuns(ctx, Scope{UserID: 42, Only: RepoFilter{Owners: []string{"acme", "other"}}}, t0.Add(-time.Hour))
+	runs, _ := s.MetricRuns(ctx, Scope{UserID: 42, Only: Selection{Owners: []string{"acme", "other"}}}, t0.Add(-time.Hour))
 	if len(runs) != 1 || runs[0].RepoID != 1 {
 		t.Fatalf("filter widened the scope: %+v", runs)
 	}
@@ -421,5 +421,29 @@ func TestRepoTopicsAndFilter(t *testing.T) {
 	}
 	if r, _ := s.GetRepo(ctx, 2); len(r.Topics) != 0 {
 		t.Fatalf("empty topics should clear: %+v", r.Topics)
+	}
+}
+
+func TestActorSelection(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	seedRepo(t, s, Repo{ID: 1})
+	mustUpsertRun(t, s, Run{ID: 1, RepoID: 1, RunAttempt: 1, ActorLogin: "ann", Status: "completed", CreatedAt: t0, UpdatedAt: t0})
+	mustUpsertRun(t, s, Run{ID: 2, RepoID: 1, RunAttempt: 1, ActorLogin: "bob", Status: "completed", CreatedAt: t0, UpdatedAt: t0})
+
+	sc := Scope{All: true, Only: Selection{Actors: []string{"bob"}}}
+	feed, _ := s.Feed(ctx, FeedFilter{Scope: sc, ShowBots: true}, t0)
+	runs, _ := s.MetricRuns(ctx, sc, t0.Add(-time.Hour))
+	if len(feed) != 1 || feed[0].ID != 2 || len(runs) != 1 || runs[0].ID != 2 {
+		t.Fatalf("actor selection: feed %d, metric runs %d", len(feed), len(runs))
+	}
+	if repos, _ := s.VisibleRepos(ctx, sc); len(repos) != 1 {
+		t.Fatal("an actor selection must not affect repo queries")
+	}
+	if feed, _ = s.Feed(ctx, FeedFilter{Scope: Scope{All: true}, Actor: "ann", ShowBots: true}, t0); len(feed) != 1 || feed[0].ID != 1 {
+		t.Fatal("feed actor filter")
+	}
+	if opts, _ := s.FilterOptions(ctx, Scope{All: true}); !slices.Equal(opts.Actors, []string{"ann", "bob"}) {
+		t.Fatalf("actor options: %v", opts.Actors)
 	}
 }
