@@ -8,5 +8,16 @@
   "lockFileMaintenance": {
     "enabled": true,
     "schedule": ["before 6am on monday"]
-  }
+  },
+  "packageRules": [
+    {
+      "description": "Generated *_templ.go files are committed and CI checks they match the templ version, so regenerate them on every templ update.",
+      "matchPackageNames": ["github.com/a-h/templ"],
+      "postUpgradeTasks": {
+        "commands": ["go tool templ generate"],
+        "fileFilters": ["**/*_templ.go"],
+        "executionMode": "branch"
+      }
+    }
+  ]
 }
