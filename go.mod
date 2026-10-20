@@ -5,7 +5,7 @@ go 1.26.8
 require (
 	github.com/a-h/templ v0.3.1070
 	github.com/bradleyfalzon/ghinstallation/v2 v2.19.0
-	github.com/google/go-github/v92 v92.0.0
+	github.com/google/go-github/v93 v93.0.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	golang.org/x/time v0.16.0
 	gopkg.in/yaml.v3 v3.0.1
