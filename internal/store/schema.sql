@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS runs (
     html_url       TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS runs_repo ON runs (repo_id);
+CREATE INDEX IF NOT EXISTS runs_head ON runs (repo_id, head_sha);
 CREATE INDEX IF NOT EXISTS runs_activity ON runs (max(created_at, run_started_at) DESC);
 CREATE INDEX IF NOT EXISTS runs_status ON runs (status);
 

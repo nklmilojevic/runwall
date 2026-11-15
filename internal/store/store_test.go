@@ -467,3 +467,45 @@ func TestActorOwners(t *testing.T) {
 		t.Fatalf("scoped actor owners: %v", got)
 	}
 }
+
+func TestHeadRunsKeepsLatestPerWorkflow(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	seedRepo(t, s, Repo{ID: 1})
+	seedRepo(t, s, Repo{ID: 2, Name: "web"})
+	head, other := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	for _, r := range []Run{
+		{ID: 1, RepoID: 1, WorkflowID: 10, WorkflowName: "Test", HeadSHA: head, Status: "completed", Conclusion: "failure", CreatedAt: t0},
+		{ID: 2, RepoID: 1, WorkflowID: 10, WorkflowName: "Test", HeadSHA: head, Status: "completed", Conclusion: "success", CreatedAt: t0.Add(time.Minute)},
+		{ID: 3, RepoID: 1, WorkflowID: 11, WorkflowName: "Lint", HeadSHA: head, Status: "in_progress", CreatedAt: t0},
+		{ID: 4, RepoID: 1, WorkflowID: 10, WorkflowName: "Test", HeadSHA: other, Status: "completed", Conclusion: "failure", CreatedAt: t0},
+		{ID: 5, RepoID: 2, WorkflowID: 20, WorkflowName: "CI", HeadSHA: head, Status: "completed", Conclusion: "success", CreatedAt: t0},
+	} {
+		r.RunNumber, r.RunAttempt, r.UpdatedAt = int(r.ID), 1, r.CreatedAt
+		mustUpsertRun(t, s, r)
+	}
+
+	got, err := s.HeadRuns(ctx, []Head{{1, head}, {3, head}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := got[Head{1, head}]
+	var ids []int64
+	for _, r := range runs {
+		ids = append(ids, r.ID)
+	}
+	if !slices.Equal(ids, []int64{3, 2}) {
+		t.Fatalf("runs for head = %v, want [3 2] (Lint, then the latest Test)", ids)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d heads, want only the one with runs", len(got))
+	}
+
+	feed, err := s.Feed(ctx, FeedFilter{Scope: Scope{All: true}, RepoID: 1, HeadSHA: other, ShowBots: true}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feed) != 1 || feed[0].ID != 4 {
+		t.Fatalf("feed by head = %+v", feed)
+	}
+}

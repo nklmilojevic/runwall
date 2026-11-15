@@ -11,6 +11,7 @@ Runwall is one Go binary. It keeps its data in an SQLite file. GitHub sends webh
 - **Live run list.** The list shows the runs of all organizations. You can filter the list by organization, repository, branch, event and status. The filters are in the URL, thus you can share a filtered view. A strip of bars shows the recent runs. The height of a bar shows the duration of the run.
 - **Run details.** For each job, Runwall shows the steps while the job operates. When the job is complete, Runwall shows the log and goes to the first error. Runwall also shows the check annotations and the workflow file.
 - **Re-run and cancel.** You can re-run the failed jobs, all the jobs or one job. You can also cancel a run. Runwall sends these requests with your GitHub token. Thus, GitHub does a check of your write access. Runwall records each request in an audit log.
+- **Pull requests.** The pull requests page shows the open pull requests in all the repositories that you can push to. For each pull request, it shows the status of the checks, the reviews and the conflicts. You can filter the list by organization, repository and author. Select the pull requests, then merge them in one step, or tell GitHub to merge them automatically when their checks pass. Runwall merges the pull requests of one repository one after the other. Runwall sends these requests with your GitHub token and records each request in the audit log. Each row also shows the result of each workflow on the last commit and the score of the kritika review bot. You can show only the pull requests that have a kritika score of 5/5 on the last commit. Click a pull request to see its checks, its open kritika findings and its workflow runs.
 - **Dashboard.** The dashboard shows the active pipelines, the trend of successful and failed runs, the distribution of results, the total duration and the estimated cost. Select a period of 24 hours, 7 days, 30 days or 90 days.
 - **Workflows.** For each workflow, Runwall shows the success rate, the average duration, the p95 duration and the cost.
 - **Repositories.** Runwall gives each repository a grade: gold, silver or bronze. The grade comes from security alerts, tests, CI health, documentation, code quality, maintenance and community files.
@@ -55,7 +56,7 @@ The demo mode shows sample data. It does not connect to GitHub.
 2. In the link below, replace `HOST` with this address.
 
    ```
-   https://github.com/settings/apps/new?name=Runwall&url=https://HOST&public=false&webhook_active=true&webhook_url=https://HOST/webhook&callback_urls[]=https://HOST/auth/callback&actions=write&administration=read&checks=read&contents=read&metadata=read&vulnerability_alerts=read&security_events=read&secret_scanning_alerts=read&events[]=workflow_run&events[]=workflow_job&events[]=repository
+   https://github.com/settings/apps/new?name=Runwall&url=https://HOST&public=false&webhook_active=true&webhook_url=https://HOST/webhook&callback_urls[]=https://HOST/auth/callback&actions=write&administration=read&checks=read&contents=write&metadata=read&pull_requests=write&statuses=read&vulnerability_alerts=read&security_events=read&secret_scanning_alerts=read&events[]=workflow_run&events[]=workflow_job&events[]=repository
    ```
 
    To make the App for an organization, start the link with `https://github.com/organizations/ORG/settings/apps/new?`. Keep the same parameters.
@@ -73,16 +74,18 @@ The demo mode shows sample data. It does not connect to GitHub.
 
 **The permissions of the App:**
 
-| Permission                                                            | Runwall uses it for                                                                                                                      |
-| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| Actions: read and write                                               | Runs, jobs and logs. Runwall uses write access only with the token of the person who signs in. It uses this access to re-run and cancel. |
-| Checks: read                                                          | Annotations                                                                                                                              |
-| Contents: read                                                        | The workflow file, and the checks for tests, documentation and linters in the grades                                                     |
-| Administration: read                                                  | Branch protection in the grades                                                                                                          |
-| Dependabot alerts, Code scanning alerts, Secret scanning alerts: read | The security part of the grades                                                                                                          |
-| Metadata: read                                                        | The list of repositories                                                                                                                 |
+| Permission                                                            | Runwall uses it for                                                                                                                                                                                         |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Actions: read and write                                               | Runs, jobs and logs. Runwall uses write access only with the token of the person who signs in. It uses this access to re-run and cancel.                                                                    |
+| Checks: read                                                          | Annotations                                                                                                                                                                                                 |
+| Contents: read and write                                              | The workflow file, and the checks for tests, documentation and linters in the grades. Runwall uses write access only with the token of the person who signs in. It uses this access to merge pull requests. |
+| Pull requests: read and write                                         | The pull requests page. Runwall uses write access only with the token of the person who signs in. It uses this access to turn on auto-merge.                                                                |
+| Commit statuses: read                                                 | The status of the checks on the pull requests page                                                                                                                                                          |
+| Administration: read                                                  | Branch protection in the grades                                                                                                                                                                             |
+| Dependabot alerts, Code scanning alerts, Secret scanning alerts: read | The security part of the grades                                                                                                                                                                             |
+| Metadata: read                                                        | The list of repositories                                                                                                                                                                                    |
 
-Only Actions and Metadata are necessary. If the App does not have one of the other permissions, the related feature shows "not checked". The feature does not fail.
+If you made the App before the pull requests page existed, add the new permissions in the settings of the App. Then accept the new permissions on each installation. Only Actions and Metadata are necessary. If the App does not have one of the other permissions, the related feature shows "not checked". The feature does not fail.
 
 ### 2. Start Runwall
 
