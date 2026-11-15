@@ -114,6 +114,7 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /pulls/merge", s.mutate(s.mergePulls))
 	mux.HandleFunc("POST /repos/{id}/score", s.mutate(s.rescore))
 	mux.HandleFunc("POST /settings/tokens", s.mutate(s.createToken))
+	mux.HandleFunc("POST /settings/tokens/{id}/authorize", s.mutate(s.authorizeToken))
 	mux.HandleFunc("POST /settings/tokens/{id}/delete", s.mutate(s.deleteToken))
 	mux.HandleFunc("POST /settings/kiosk", s.mutate(s.createKiosk))
 	mux.HandleFunc("POST /settings/kiosk/{id}/delete", s.mutate(s.deleteKiosk))

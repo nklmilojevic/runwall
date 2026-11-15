@@ -31,7 +31,8 @@ templ settingsPage(sv settingsView) {
 				}
 				<div>
 					<b>{ sv.V.User.Name }</b>
-					<small class="muted">{ "@" + sv.V.User.Login }
+					<small class="muted">
+						{ "@" + sv.V.User.Login }
 						if sv.V.Admin {
 							· admin
 						}
@@ -48,13 +49,13 @@ templ settingsPage(sv settingsView) {
 			</div>
 			<p class="note">You see the repositories your GitHub account can access. Access is re-checked every 10 minutes.</p>
 		</section>
-
 		<section class="card settings-card">
 			<h2 class="card-title">
 				@icon("key")
 				API tokens for MCP
 			</h2>
-			<p class="note">Tokens let AI agents such as Claude Code query runs, failures, logs, workflow stats and grades through the MCP endpoint. They see exactly what you see, and can't re-run or cancel anything.</p>
+			<p class="note">Tokens let AI agents such as Claude Code query runs, failures, logs, workflow stats, grades and open pull requests through the MCP endpoint. They see exactly what you see, and can't re-run or cancel anything.</p>
+			<p class="note">To let a token's agents merge pull requests, authorize it with GitHub. The token then merges as you, in the repositories you can push to, and every merge shows in the audit log.</p>
 			if sv.NewToken != "" {
 				<div class="reveal" role="status">
 					<p><b>Copy this token now.</b> It won't be shown again.</p>
@@ -67,6 +68,7 @@ templ settingsPage(sv settingsView) {
 						<code id="mcp-cmd">{ mcpCommand(sv) }</code>
 						<button type="button" class="btn" data-copy="#mcp-cmd">Copy</button>
 					</div>
+					<p>To let it merge pull requests, use <b>Authorize</b> next to it below.</p>
 				</div>
 			}
 			<form method="post" action="/settings/tokens" class="inline-form">
@@ -79,7 +81,7 @@ templ settingsPage(sv settingsView) {
 			</form>
 			if len(sv.Tokens) > 0 {
 				<table class="table">
-					<thead><tr><th>Name</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+					<thead><tr><th>Name</th><th>Created</th><th>Last used</th><th>Merging</th><th></th></tr></thead>
 					<tbody>
 						for _, t := range sv.Tokens {
 							<tr>
@@ -91,6 +93,17 @@ templ settingsPage(sv settingsView) {
 									} else {
 										{ ago(t.LastUsedAt, sv.Now) }
 									}
+								</td>
+								<td>
+									<form method="post" action={ templ.URL("/settings/tokens/" + strconv.FormatInt(t.ID, 10) + "/authorize") }>
+										@csrfField(sv.shell)
+										if t.Authorized {
+											<span class="muted">authorized</span>
+											<button type="submit" class="btn btn-sm" title="Authorize this token with GitHub again">Re-authorize</button>
+										} else {
+											<button type="submit" class="btn btn-sm" title="Let agents using this token merge pull requests as you">Authorize</button>
+										}
+									</form>
 								</td>
 								<td class="num">
 									<form method="post" action={ templ.URL("/settings/tokens/" + strconv.FormatInt(t.ID, 10) + "/delete") } onsubmit="return confirm('Revoke this token? Agents using it will stop working.')">
@@ -105,7 +118,6 @@ templ settingsPage(sv settingsView) {
 			}
 			<p class="note">MCP endpoint: <code>{ sv.MCPURL }</code></p>
 		</section>
-
 		if sv.V.Admin {
 			<section class="card settings-card">
 				<h2 class="card-title">
@@ -159,7 +171,6 @@ templ settingsPage(sv settingsView) {
 					</table>
 				}
 			</section>
-
 			<section class="card settings-card">
 				<h2 class="card-title">
 					@icon("rerun")

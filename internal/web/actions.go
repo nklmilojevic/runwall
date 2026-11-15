@@ -259,6 +259,30 @@ func (s *Server) createToken(w http.ResponseWriter, r *http.Request, v *auth.Vie
 	s.render(w, r, settingsPage(sv))
 }
 
+// authorizeToken sends the token's owner through GitHub's authorization, which gives the
+// API token its own GitHub grant so agents can merge pull requests as that person.
+func (s *Server) authorizeToken(w http.ResponseWriter, r *http.Request, v *auth.Viewer) {
+	id, ok := pathID(r)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	tokens, err := s.Store.ListAPITokens(r.Context(), v.User.ID)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	if !slices.ContainsFunc(tokens, func(t store.APIToken) bool { return t.ID == id }) {
+		http.NotFound(w, r)
+		return
+	}
+	if s.Auth == nil {
+		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		return
+	}
+	s.Auth.StartGrant(w, r, id)
+}
+
 func (s *Server) deleteToken(w http.ResponseWriter, r *http.Request, v *auth.Viewer) {
 	if id, ok := pathID(r); ok {
 		if err := s.Store.DeleteAPIToken(r.Context(), v.User.ID, id); err != nil {

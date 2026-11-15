@@ -122,10 +122,10 @@ func run(demoMode bool) error {
 			wh.Allowed = syncCfg.Allowed
 		}
 		mux.Handle("POST /webhook", wh)
-		mcpSrv := &mcpserver.Server{Store: st, Auth: authn, Logs: sy, Costs: costs, Log: log, Now: time.Now, Version: version}
+		prs := pulls.GitHub{GraphQLURL: pulls.GraphQLURL(cfg.APIURL)}
+		mcpSrv := &mcpserver.Server{Store: st, Auth: authn, Logs: sy, Pulls: prs, Costs: costs, Log: log, Now: time.Now, Version: version}
 		mux.Handle("/mcp", mcpSrv.Handler())
-		srv.Syncer, srv.Scorer, srv.Auth = sy, scorer, authn
-		srv.Pulls = pulls.GitHub{GraphQLURL: pulls.GraphQLURL(cfg.APIURL)}
+		srv.Syncer, srv.Scorer, srv.Auth, srv.Pulls = sy, scorer, authn, prs
 		go wh.Run(ctx)
 		go sy.Run(ctx)
 		go func() {

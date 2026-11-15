@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -293,5 +294,83 @@ func TestSafeNext(t *testing.T) {
 		if got := safeNext(in); got != want {
 			t.Errorf("safeNext(%q) = %q", in, got)
 		}
+	}
+}
+
+// authorizeToken runs the browser side of authorizing an API token and reports whether a session was created.
+func authorizeToken(t *testing.T, a *Auth, f *fakeGitHub, tokenID int64) (string, bool, error) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	a.StartGrant(rec, httptest.NewRequest(http.MethodPost, "/settings/tokens/x/authorize", nil), tokenID)
+	loc, _ := url.Parse(rec.Header().Get("Location"))
+	f.challenge = loc.Query().Get("code_challenge")
+	cb := httptest.NewRequest(http.MethodGet, "/auth/callback?code=the-code&state="+loc.Query().Get("state"), nil)
+	cb.AddCookie(rec.Result().Cookies()[0])
+	rec = httptest.NewRecorder()
+	dest, err := a.Callback(rec, cb)
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == sessionCookie && c.MaxAge > 0 {
+			return dest, true, err
+		}
+	}
+	return dest, false, err
+}
+
+func TestAPITokenGrant(t *testing.T) {
+	a, f, st := setup(t, nil)
+	ctx := context.Background()
+	if _, _, err := signIn(t, a, f, "/"); err != nil {
+		t.Fatal(err)
+	}
+	api := RandomToken("gad_")
+	st.CreateAPIToken(ctx, 42, "laptop", Hash(api), time.Now())
+	tokens, _ := st.ListAPITokens(ctx, 42)
+	id := tokens[0].ID
+
+	av, _ := a.APIViewer(ctx, api)
+	if _, err := av.GitHub(ctx); !errors.Is(err, ErrNoGrant) {
+		t.Fatalf("an unauthorized API token must not act on GitHub: %v", err)
+	}
+
+	dest, session, err := authorizeToken(t, a, f, id)
+	if err != nil || dest != "/settings" || session {
+		t.Fatalf("authorize: dest %q session %v err %v", dest, session, err)
+	}
+	if tokens, _ := st.ListAPITokens(ctx, 42); !tokens[0].Authorized {
+		t.Fatal("token should be marked authorized")
+	}
+	g, _ := st.APITokenGrant(ctx, id)
+	if strings.Contains(string(g.AccessToken), "ghu_") || strings.Contains(string(g.RefreshToken), "ghr_") {
+		t.Fatal("grant tokens must not be stored in plain text")
+	}
+	av, _ = a.APIViewer(ctx, api)
+	gh, err := av.GitHub(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u, _, err := gh.Users.Get(ctx, ""); err != nil || u.GetLogin() != "nkl" {
+		t.Fatalf("client should act as the token's owner: %v", err)
+	}
+
+	// Nine hours later the grant's access token is refreshed and saved on the token.
+	a.now = func() time.Time { return time.Now().Add(9 * time.Hour) }
+	before := f.refreshes
+	if _, err := av.GitHub(ctx); err != nil || f.refreshes != before+1 {
+		t.Fatalf("refresh: %v, refreshes %d", err, f.refreshes-before)
+	}
+	g, _ = st.APITokenGrant(ctx, id)
+	if tok, _ := a.open(g.AccessToken); tok != "ghu_2" {
+		t.Fatalf("refreshed grant not stored, got %q", tok)
+	}
+	a.now = time.Now
+
+	// GitHub account 42 can't authorize someone else's token.
+	st.CreateAPIToken(ctx, 99, "theirs", Hash(RandomToken("gad_")), time.Now())
+	theirs, _ := st.ListAPITokens(ctx, 99)
+	if _, _, err := authorizeToken(t, a, f, theirs[0].ID); err == nil {
+		t.Fatal("authorizing another user's token must fail")
+	}
+	if theirs, _ = st.ListAPITokens(ctx, 99); theirs[0].Authorized {
+		t.Fatal("another user's token must stay unauthorized")
 	}
 }

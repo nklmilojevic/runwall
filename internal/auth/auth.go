@@ -3,7 +3,8 @@
 //
 // The App's installation token is still used for all background work. A user's own
 // token is used only to discover their repo access and to perform run actions, so
-// GitHub enforces that user's permissions.
+// GitHub enforces that user's permissions. An API token can get its own GitHub
+// authorization, so agents can merge pull requests as the token's owner.
 package auth
 
 import (
@@ -24,6 +25,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/go-github/v93/github"
@@ -59,6 +61,8 @@ type Auth struct {
 	http  *http.Client
 	now   func() time.Time
 	aead  cipher.AEAD
+	// grantMu serializes API token refreshes: GitHub invalidates a refresh token once used.
+	grantMu sync.Mutex
 }
 
 func New(cfg Config, st *store.Store, log *slog.Logger) (*Auth, error) {
@@ -146,6 +150,8 @@ type oauthState struct {
 	State    string `json:"s"`
 	Verifier string `json:"v"`
 	Next     string `json:"n"`
+	// Token is the API token being authorized; 0 means a sign-in.
+	Token int64 `json:"t,omitempty"`
 }
 
 // safeNext only allows local paths, so the login flow can't be used as an open redirect.
@@ -158,7 +164,17 @@ func safeNext(next string) string {
 
 // Start redirects to GitHub's authorization page.
 func (a *Auth) Start(w http.ResponseWriter, r *http.Request) {
-	st := oauthState{State: RandomToken(""), Verifier: RandomToken(""), Next: safeNext(r.URL.Query().Get("next"))}
+	a.start(w, r, oauthState{Next: safeNext(r.URL.Query().Get("next"))})
+}
+
+// StartGrant redirects to GitHub's authorization page to give an API token its own
+// GitHub authorization. The callback stores it on the token instead of signing in.
+func (a *Auth) StartGrant(w http.ResponseWriter, r *http.Request, tokenID int64) {
+	a.start(w, r, oauthState{Next: "/settings", Token: tokenID})
+}
+
+func (a *Auth) start(w http.ResponseWriter, r *http.Request, st oauthState) {
+	st.State, st.Verifier = RandomToken(""), RandomToken("")
 	b, _ := json.Marshal(st)
 	a.setCookie(w, oauthCookie, base64.RawURLEncoding.EncodeToString(a.seal(string(b))), 10*time.Minute)
 	challenge := sha256.Sum256([]byte(st.Verifier))
@@ -247,6 +263,17 @@ func (a *Auth) Callback(w http.ResponseWriter, r *http.Request) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("read GitHub user: %w", err)
 	}
+	now := a.now()
+	if st.Token != 0 {
+		if err := a.store.SetAPITokenGrant(ctx, st.Token, u.GetID(), a.grant(tr, now)); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return "", errors.New("that API token doesn't exist, or belongs to another GitHub account")
+			}
+			return "", err
+		}
+		a.log.Info("API token authorized", "login", u.GetLogin(), "token", st.Token)
+		return st.Next, nil
+	}
 	user := store.User{ID: u.GetID(), Login: u.GetLogin(), Name: u.GetName(), AvatarURL: u.GetAvatarURL()}
 	if err := a.store.UpsertUser(ctx, user); err != nil {
 		return "", err
@@ -260,18 +287,10 @@ func (a *Auth) Callback(w http.ResponseWriter, r *http.Request) (string, error) 
 		return "", ErrNotAllowed
 	}
 
-	now := a.now()
 	sid := RandomToken("")
 	se := store.Session{
-		IDHash: Hash(sid), UserID: user.ID, CSRF: RandomToken(""),
-		AccessToken: a.seal(tr.AccessToken), RefreshToken: a.seal(tr.RefreshToken),
+		IDHash: Hash(sid), UserID: user.ID, CSRF: RandomToken(""), Grant: a.grant(tr, now),
 		ReposCheckedAt: now, CreatedAt: now, LastSeenAt: now,
-	}
-	if tr.ExpiresIn > 0 {
-		se.AccessExpiresAt = now.Add(time.Duration(tr.ExpiresIn) * time.Second)
-	}
-	if tr.RefreshTokenExpiresIn > 0 {
-		se.RefreshExpiresAt = now.Add(time.Duration(tr.RefreshTokenExpiresIn) * time.Second)
 	}
 	if err := a.store.SaveSession(ctx, se); err != nil {
 		return "", err
@@ -357,7 +376,9 @@ type Viewer struct {
 	CSRF    string
 	Demo    bool
 	session store.Session
-	auth    *Auth
+	// apiToken is the API token behind an MCP request; its own grant acts on GitHub.
+	apiToken int64
+	auth     *Auth
 }
 
 func (v *Viewer) SignedIn() bool { return v.User.ID != 0 || v.Demo }
@@ -379,7 +400,13 @@ func (v *Viewer) GitHub(ctx context.Context) (*github.Client, error) {
 	if v.User.ID == 0 || v.auth == nil {
 		return nil, errors.New("not signed in")
 	}
-	token, err := v.auth.accessToken(ctx, &v.session)
+	var token string
+	var err error
+	if v.apiToken != 0 {
+		token, err = v.auth.apiAccessToken(ctx, v.apiToken, v.User.ID)
+	} else {
+		token, err = v.auth.accessToken(ctx, &v.session)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -402,26 +429,71 @@ func DemoViewer() *Viewer {
 	return &Viewer{User: store.User{ID: 1, Login: "demo", Name: "Demo"}, Scope: store.Scope{All: true}, Admin: true, CSRF: "demo", Demo: true}
 }
 
-// accessToken returns a valid user token, refreshing it when it is about to expire.
-func (a *Auth) accessToken(ctx context.Context, se *store.Session) (string, error) {
-	now := a.now()
-	if se.AccessExpiresAt.IsZero() || now.Before(se.AccessExpiresAt.Add(-5*time.Minute)) {
-		return a.open(se.AccessToken)
+// grant seals a token response for storage.
+func (a *Auth) grant(tr tokenResponse, now time.Time) store.Grant {
+	g := store.Grant{AccessToken: a.seal(tr.AccessToken), RefreshToken: a.seal(tr.RefreshToken)}
+	if tr.ExpiresIn > 0 {
+		g.AccessExpiresAt = now.Add(time.Duration(tr.ExpiresIn) * time.Second)
 	}
-	refresh, err := a.open(se.RefreshToken)
-	if err != nil || refresh == "" || (!se.RefreshExpiresAt.IsZero() && now.After(se.RefreshExpiresAt)) {
-		return "", errors.New("GitHub sign-in expired")
+	if tr.RefreshTokenExpiresIn > 0 {
+		g.RefreshExpiresAt = now.Add(time.Duration(tr.RefreshTokenExpiresIn) * time.Second)
+	}
+	return g
+}
+
+// validToken returns a usable access token from g, refreshing g when the token is about
+// to expire. refreshed reports that g changed and must be saved.
+func (a *Auth) validToken(ctx context.Context, g *store.Grant) (token string, refreshed bool, err error) {
+	now := a.now()
+	if g.AccessExpiresAt.IsZero() || now.Before(g.AccessExpiresAt.Add(-5*time.Minute)) {
+		token, err = a.open(g.AccessToken)
+		return token, false, err
+	}
+	refresh, err := a.open(g.RefreshToken)
+	if err != nil || refresh == "" || (!g.RefreshExpiresAt.IsZero() && now.After(g.RefreshExpiresAt)) {
+		return "", false, errors.New("GitHub sign-in expired")
 	}
 	tr, err := a.tokenRequest(ctx, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh}})
 	if err != nil {
-		return "", fmt.Errorf("refresh token: %w", err)
+		return "", false, fmt.Errorf("refresh token: %w", err)
 	}
-	se.AccessToken, se.RefreshToken = a.seal(tr.AccessToken), a.seal(tr.RefreshToken)
-	se.AccessExpiresAt = now.Add(time.Duration(tr.ExpiresIn) * time.Second)
-	if tr.RefreshTokenExpiresIn > 0 {
-		se.RefreshExpiresAt = now.Add(time.Duration(tr.RefreshTokenExpiresIn) * time.Second)
+	*g = a.grant(tr, now)
+	return tr.AccessToken, true, nil
+}
+
+// accessToken returns a valid user token, refreshing it when it is about to expire.
+func (a *Auth) accessToken(ctx context.Context, se *store.Session) (string, error) {
+	token, refreshed, err := a.validToken(ctx, &se.Grant)
+	if err != nil || !refreshed {
+		return token, err
 	}
-	return tr.AccessToken, a.store.SaveSession(ctx, *se)
+	return token, a.store.SaveSession(ctx, *se)
+}
+
+// ErrNoGrant means an API token has no usable GitHub authorization of its own.
+var ErrNoGrant = errors.New("this API token can't act on GitHub until its owner authorizes it on the dashboard's Settings page")
+
+// apiAccessToken returns a valid user token from an API token's own grant.
+func (a *Auth) apiAccessToken(ctx context.Context, tokenID, userID int64) (string, error) {
+	a.grantMu.Lock()
+	defer a.grantMu.Unlock()
+	g, err := a.store.APITokenGrant(ctx, tokenID)
+	if err != nil {
+		return "", err
+	}
+	if len(g.AccessToken) == 0 {
+		return "", ErrNoGrant
+	}
+	token, refreshed, err := a.validToken(ctx, &g)
+	if err != nil {
+		return "", fmt.Errorf("%w (%v)", ErrNoGrant, err)
+	}
+	if refreshed {
+		if err := a.store.SetAPITokenGrant(ctx, tokenID, userID, g); err != nil {
+			return "", err
+		}
+	}
+	return token, nil
 }
 
 // Load resolves the request's session. It returns nil when there is no valid session.
@@ -537,7 +609,7 @@ func (a *Auth) OpenKiosk(w http.ResponseWriter, r *http.Request, token string) e
 
 // APIViewer resolves a personal API token (for MCP) to a viewer.
 func (a *Auth) APIViewer(ctx context.Context, token string) (*Viewer, error) {
-	userID, err := a.store.UseAPIToken(ctx, Hash(token), a.now())
+	id, userID, err := a.store.UseAPIToken(ctx, Hash(token), a.now())
 	if err != nil {
 		return nil, err
 	}
@@ -545,7 +617,7 @@ func (a *Auth) APIViewer(ctx context.Context, token string) (*Viewer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Viewer{User: u, Scope: store.Scope{UserID: u.ID}, Admin: containsFold(a.cfg.Admins, u.Login), auth: a}, nil
+	return &Viewer{User: u, Scope: store.Scope{UserID: u.ID}, Admin: containsFold(a.cfg.Admins, u.Login), apiToken: id, auth: a}, nil
 }
 
 // PruneSessions drops idle sessions.
