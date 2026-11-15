@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.2.0 - 2026-11-15
+
+This release lets an AI agent list and merge pull requests through MCP. It also updates the `templ` library.
+
+### New features
+
+- Each API token can now get its own GitHub authorization. Use the **Authorize** button on the Settings page. The token owner then controls what the token can merge.
+- The new `list_pull_requests` MCP tool lists the open pull requests in the repositories where the token owner can push.
+- The new `merge_pull_request` MCP tool merges a pull request, or enables auto-merge, as the token owner. Each merge goes to the audit log.
+
+### Fixes
+
+- The `templ` dependency is now at version v0.3.1118. This version includes parser fixes and a security update.
+
 ## v0.1.0 - 2026-11-15
 
 This is the first release of Runwall. It gives you a live dashboard for GitHub Actions runs across your organizations.
