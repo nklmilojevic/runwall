@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -541,5 +542,36 @@ func TestOrgNarrowsOtherPickers(t *testing.T) {
 	}
 	if strings.Contains(row("org", "acme"), "off-org") {
 		t.Error("the org picker itself is never narrowed")
+	}
+}
+
+func TestAuthorizeToken(t *testing.T) {
+	e, user, _ := newAuthed(t)
+	ctx := context.Background()
+	e.s.Store.UpsertUser(ctx, store.User{ID: 99, Login: "other"})
+	e.s.Store.CreateAPIToken(ctx, 42, "mine", auth.Hash("gad_mine"), now)
+	e.s.Store.CreateAPIToken(ctx, 99, "theirs", auth.Hash("gad_theirs"), now)
+	mine, _ := e.s.Store.ListAPITokens(ctx, 42)
+	theirs, _ := e.s.Store.ListAPITokens(ctx, 99)
+	post := func(id int64, csrf string) *http.Response {
+		form := url.Values{"csrf": {csrf}}
+		resp, _ := do(t, http.MethodPost, e.srv.URL+"/settings/tokens/"+strconv.FormatInt(id, 10)+"/authorize", user,
+			map[string]string{"Content-Type": "application/x-www-form-urlencoded"}, strings.NewReader(form.Encode()))
+		return resp
+	}
+	if r := post(mine[0].ID, "wrong"); r.StatusCode != http.StatusForbidden {
+		t.Fatalf("bad CSRF: %d", r.StatusCode)
+	}
+	if r := post(theirs[0].ID, "csrf-user"); r.StatusCode != http.StatusNotFound {
+		t.Fatalf("another user's token: %d", r.StatusCode)
+	}
+	r := post(mine[0].ID, "csrf-user")
+	if loc := r.Header.Get("Location"); r.StatusCode != http.StatusFound || !strings.Contains(loc, "/login/oauth/authorize?") {
+		t.Fatalf("authorize: %d %s", r.StatusCode, loc)
+	}
+
+	_, body := get(t, e.srv.URL+"/settings", user, nil)
+	if !strings.Contains(body, "Merging") || !strings.Contains(body, ">Authorize</button>") {
+		t.Fatal("settings should offer to authorize the token")
 	}
 }

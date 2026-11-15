@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -84,18 +85,23 @@ func (s *Store) WritableRepos(ctx context.Context, userID int64) (map[int64]bool
 
 // Sessions
 
-type Session struct {
-	IDHash           string
-	UserID           int64
-	KioskID          int64
+// Grant is a person's GitHub user token pair.
+type Grant struct {
 	AccessToken      []byte // encrypted
 	RefreshToken     []byte // encrypted
 	AccessExpiresAt  time.Time
 	RefreshExpiresAt time.Time
-	CSRF             string
-	ReposCheckedAt   time.Time
-	CreatedAt        time.Time
-	LastSeenAt       time.Time
+}
+
+type Session struct {
+	IDHash  string
+	UserID  int64
+	KioskID int64
+	Grant
+	CSRF           string
+	ReposCheckedAt time.Time
+	CreatedAt      time.Time
+	LastSeenAt     time.Time
 }
 
 const sessionColumns = `id_hash, user_id, kiosk_id, access_token, refresh_token, access_expires_at, refresh_expires_at,
@@ -142,6 +148,7 @@ type APIToken struct {
 	Name       string
 	CreatedAt  time.Time
 	LastUsedAt time.Time
+	Authorized bool // it has its own GitHub authorization, so it can merge pull requests
 }
 
 func (s *Store) CreateAPIToken(ctx context.Context, userID int64, name, hash string, at time.Time) error {
@@ -151,7 +158,8 @@ func (s *Store) CreateAPIToken(ctx context.Context, userID int64, name, hash str
 }
 
 func (s *Store) ListAPITokens(ctx context.Context, userID int64) ([]APIToken, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, name, created_at, last_used_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC`, userID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, name, created_at, last_used_at, coalesce(length(access_token), 0) > 0
+		FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +168,7 @@ func (s *Store) ListAPITokens(ctx context.Context, userID int64) ([]APIToken, er
 	for rows.Next() {
 		var t APIToken
 		var ca, lu int64
-		if err := rows.Scan(&t.ID, &t.UserID, &t.Name, &ca, &lu); err != nil {
+		if err := rows.Scan(&t.ID, &t.UserID, &t.Name, &ca, &lu, &t.Authorized); err != nil {
 			return nil, err
 		}
 		t.CreatedAt, t.LastUsedAt = fromUnix(ca), fromUnix(lu)
@@ -169,14 +177,37 @@ func (s *Store) ListAPITokens(ctx context.Context, userID int64) ([]APIToken, er
 	return out, rows.Err()
 }
 
-// UseAPIToken resolves a token hash to its user and records the use.
-func (s *Store) UseAPIToken(ctx context.Context, hash string, at time.Time) (int64, error) {
-	var id, userID int64
+// UseAPIToken resolves a token hash to the token's ID and user, and records the use.
+func (s *Store) UseAPIToken(ctx context.Context, hash string, at time.Time) (id, userID int64, err error) {
 	if err := s.db.QueryRowContext(ctx, `SELECT id, user_id FROM api_tokens WHERE hash = ?`, hash).Scan(&id, &userID); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE api_tokens SET last_used_at = ? WHERE id = ?`, unix(at), id)
-	return userID, err
+	_, err = s.db.ExecContext(ctx, `UPDATE api_tokens SET last_used_at = ? WHERE id = ?`, unix(at), id)
+	return id, userID, err
+}
+
+// APITokenGrant returns a token's GitHub authorization; it is empty until the owner authorizes the token.
+func (s *Store) APITokenGrant(ctx context.Context, id int64) (Grant, error) {
+	var g Grant
+	var ae, re int64
+	err := s.db.QueryRowContext(ctx, `SELECT access_token, refresh_token, access_expires_at, refresh_expires_at FROM api_tokens WHERE id = ?`, id).
+		Scan(&g.AccessToken, &g.RefreshToken, &ae, &re)
+	g.AccessExpiresAt, g.RefreshExpiresAt = fromUnix(ae), fromUnix(re)
+	return g, err
+}
+
+// SetAPITokenGrant stores a token's GitHub authorization. It returns sql.ErrNoRows unless
+// the token exists and belongs to userID.
+func (s *Store) SetAPITokenGrant(ctx context.Context, id, userID int64, g Grant) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE api_tokens SET access_token = ?, refresh_token = ?, access_expires_at = ?, refresh_expires_at = ?
+		WHERE id = ? AND user_id = ?`, g.AccessToken, g.RefreshToken, unix(g.AccessExpiresAt), unix(g.RefreshExpiresAt), id, userID)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return cmp.Or(err, sql.ErrNoRows)
+	}
+	return nil
 }
 
 func (s *Store) DeleteAPIToken(ctx context.Context, userID, id int64) error {

@@ -110,7 +110,12 @@ CREATE TABLE IF NOT EXISTS api_tokens (
     name         TEXT NOT NULL,
     hash         TEXT NOT NULL UNIQUE,
     created_at   INTEGER NOT NULL,
-    last_used_at INTEGER NOT NULL DEFAULT 0
+    last_used_at INTEGER NOT NULL DEFAULT 0,
+    -- the token's own GitHub authorization, used for pull request merges
+    access_token       BLOB,
+    refresh_token      BLOB,
+    access_expires_at  INTEGER NOT NULL DEFAULT 0,
+    refresh_expires_at INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS kiosk_links (

@@ -53,6 +53,10 @@ func migrate(db *sql.DB) error {
 		{"repos", "description", `ALTER TABLE repos ADD COLUMN description TEXT NOT NULL DEFAULT ''`},
 		{"runs", "jobs_fetched", `ALTER TABLE runs ADD COLUMN jobs_fetched INTEGER NOT NULL DEFAULT 0`},
 		{"repos", "topics", `ALTER TABLE repos ADD COLUMN topics TEXT NOT NULL DEFAULT ''`},
+		{"api_tokens", "access_token", `ALTER TABLE api_tokens ADD COLUMN access_token BLOB`},
+		{"api_tokens", "refresh_token", `ALTER TABLE api_tokens ADD COLUMN refresh_token BLOB`},
+		{"api_tokens", "access_expires_at", `ALTER TABLE api_tokens ADD COLUMN access_expires_at INTEGER NOT NULL DEFAULT 0`},
+		{"api_tokens", "refresh_expires_at", `ALTER TABLE api_tokens ADD COLUMN refresh_expires_at INTEGER NOT NULL DEFAULT 0`},
 	}
 	for _, a := range added {
 		var n int

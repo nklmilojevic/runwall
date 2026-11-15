@@ -17,7 +17,7 @@ Runwall is one Go binary. It keeps its data in an SQLite file. GitHub sends webh
 - **Repositories.** Runwall gives each repository a grade: gold, silver or bronze. The grade comes from security alerts, tests, CI health, documentation, code quality, maintenance and community files.
 - **Stuck runs.** Runwall shows a run as stuck when it waits in the queue for longer than a set time.
 - **Kiosk links.** A kiosk link shows a read-only dashboard on a wall display. It does not need a sign-in.
-- **MCP endpoint.** AI agents (for example, Claude Code and Cursor) can read runs, failures, logs, statistics and grades. They use a personal token.
+- **MCP endpoint.** AI agents (for example, Claude Code and Cursor) can read runs, failures, logs, statistics, grades and open pull requests. They use a personal token. If you authorize the token with GitHub, agents can also merge pull requests.
 - **Themes.** Runwall has a light theme and a dark theme (Catppuccin). You can use it on a mobile phone.
 
 <table>
@@ -138,7 +138,9 @@ When Runwall stops, GitHub cannot send webhooks to it. GitHub does not send them
      claude mcp add --transport http runwall https://HOST/mcp --header "Authorization: Bearer <token>"
      ```
 
-  The MCP tools can only read data. The tools are `list_runs`, `get_run`, `get_job_log`, `failing_workflows`, `workflow_stats` and `repo_score`.
+  These MCP tools only read data: `list_runs`, `get_run`, `get_job_log`, `failing_workflows`, `workflow_stats`, `repo_score` and `list_pull_requests`.
+
+  The `merge_pull_request` tool merges a pull request, or tells GitHub to merge it automatically when its checks pass. To use this tool, and also `list_pull_requests`, authorize the token: on the Settings page, click **Authorize** next to the token, then accept on GitHub. The token then gets its own GitHub authorization. Runwall merges with this authorization, so GitHub merges as you and applies your permissions and the branch protection rules. The tool works only in the repositories that you can push to. Runwall records each merge in the audit log as `mcp-merge-pr` or `mcp-auto-merge-pr`. Give the commit that you checked as `head_sha`. Then GitHub refuses the merge if someone pushed a new commit after you checked the pull request.
 
 ## Configuration
 
