@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/a-h/templ"
+	"github.com/google/go-github/v93/github"
 
 	"github.com/nklmilojevic/runwall/internal/auth"
 	"github.com/nklmilojevic/runwall/internal/cost"
@@ -56,6 +57,7 @@ type Server struct {
 	Hub            *hub.Hub
 	Syncer         Syncer
 	Scorer         Scorer
+	Pulls          PullSource
 	Auth           *auth.Auth // nil in demo mode
 	Demo           bool
 	Costs          cost.Table
@@ -69,6 +71,9 @@ type Server struct {
 
 	graphMu sync.Mutex
 	graphs  map[string]graphEntry
+
+	prCache pullCache
+	ghFor   func(context.Context, *auth.Viewer) (*github.Client, error) // tests replace the viewer's GitHub client
 }
 
 // Routes registers the UI. The webhook and MCP endpoints are mounted separately.
@@ -93,6 +98,7 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /jobs/{id}/annotations", s.protect(s.annotations))
 	mux.HandleFunc("GET /workflows", s.protect(s.workflows))
 	mux.HandleFunc("GET /workflows/{repo}/{workflow}", s.protect(s.workflowDetail))
+	mux.HandleFunc("GET /pulls", s.protect(s.pullRequests))
 	mux.HandleFunc("GET /repos", s.protect(s.repos))
 	mux.HandleFunc("GET /repos/{id}", s.protect(s.repoDetail))
 	mux.HandleFunc("GET /settings", s.protect(s.settings))
@@ -103,6 +109,7 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /runs/{id}/rerun-failed", s.mutate(s.runAction(actionRerunFailed)))
 	mux.HandleFunc("POST /runs/{id}/cancel", s.mutate(s.runAction(actionCancel)))
 	mux.HandleFunc("POST /jobs/{id}/rerun", s.mutate(s.jobRerun))
+	mux.HandleFunc("POST /pulls/merge", s.mutate(s.mergePulls))
 	mux.HandleFunc("POST /repos/{id}/score", s.mutate(s.rescore))
 	mux.HandleFunc("POST /settings/tokens", s.mutate(s.createToken))
 	mux.HandleFunc("POST /settings/tokens/{id}/delete", s.mutate(s.deleteToken))

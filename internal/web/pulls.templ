@@ -1,0 +1,231 @@
+package web
+
+import (
+	"strconv"
+	"strings"
+
+	"github.com/nklmilojevic/runwall/internal/pulls"
+)
+
+// prState sums up what stands between a pull request and a merge.
+func prState(p pulls.PR) (state, string) {
+	switch {
+	case p.Draft:
+		return "skip", "Draft"
+	case p.Mergeable == "CONFLICTING" || p.State == "DIRTY":
+		return "fail", "Conflicts"
+	case p.Checks == "FAILURE" || p.Checks == "ERROR":
+		return "fail", "Checks failing"
+	case p.Review == "CHANGES_REQUESTED":
+		return "fail", "Changes requested"
+	case p.Checks == "PENDING" || p.Checks == "EXPECTED":
+		return "run", "Checks running"
+	case p.State == "BEHIND":
+		return "wait", "Behind base"
+	case p.State == "BLOCKED" && p.Review == "REVIEW_REQUIRED":
+		return "wait", "Needs review"
+	case p.State == "BLOCKED":
+		return "wait", "Blocked"
+	case p.State == "UNSTABLE":
+		return "stuck", "Mergeable, checks not green"
+	case p.Ready():
+		return "ok", "Ready to merge"
+	}
+	return "pending", "GitHub is checking"
+}
+
+func prStateClass(p pulls.PR) string {
+	s, _ := prState(p)
+	return "s-" + string(s)
+}
+
+func prStateLabel(p pulls.PR) string {
+	_, l := prState(p)
+	return l
+}
+
+func prStateGlyph(p pulls.PR) string {
+	s, _ := prState(p)
+	return s.glyph()
+}
+
+func repoShort(p pulls.PR) string {
+	name, _ := strings.CutPrefix(p.Repo, p.Owner+"/")
+	return name
+}
+
+func prReady(p pulls.PR) templ.Attributes {
+	if p.Ready() {
+		return templ.Attributes{"data-ready": "1"}
+	}
+	return templ.Attributes{}
+}
+
+func authorLabels(v pullsView) map[string]string {
+	out := map[string]string{}
+	for a, bot := range v.Bots {
+		if bot {
+			out[a] = a + " (bot)"
+		}
+	}
+	return out
+}
+
+templ pullsPage(v pullsView) {
+	@layout(v.shell) {
+		<div class="page-head page-head-row">
+			<div>
+				<h1>Pull requests</h1>
+				<p>Open pull requests in the repositories that you can push to. Select some, then merge them together.</p>
+			</div>
+			<div class="head-actions">
+				<button type="button" class="btn" hx-get="/pulls?refresh=1" hx-include="#pull-filters" hx-target="#pulls" hx-swap="innerHTML">
+					@icon("sync")
+					Refresh
+				</button>
+			</div>
+		</div>
+		<form id="pull-filters" class="filters card" method="get" action="/pulls" hx-get="/pulls" hx-target="#pulls" hx-swap="innerHTML" hx-push-url="true" hx-trigger="change, submit">
+			@selectField("Org", "org", v.Filter.Owner, v.Owners, nil)
+			@selectField("Repo", "repo", v.Filter.Repo, v.Repos, nil)
+			@selectField("Author", "author", v.Filter.Author, v.Authors, authorLabels(v))
+			<div class="toggles">
+				@toggle("ready", "Ready to merge only", v.Filter.ReadyOnly)
+				@toggle("drafts", "Show drafts", v.Filter.Drafts)
+			</div>
+			<noscript><button type="submit">Apply</button></noscript>
+		</form>
+		<form id="merge-form" class="card feed-card pr-card" data-merge-form>
+			<div id="pulls" hx-get="/pulls" hx-include="#pull-filters" hx-vals='{"refresh": "1"}' hx-trigger="pulls-changed from:body" hx-swap="innerHTML">
+				@pullRows(v)
+			</div>
+			<div class="merge-bar">
+				<label class="chk">
+					<input type="checkbox" data-select-all aria-label="Select all pull requests that can merge"/>
+					<span data-selected-count>0 selected</span>
+				</label>
+				<button type="button" class="btn btn-sm" data-select-ready>Select ready</button>
+				<span class="spacer"></span>
+				<label class="field merge-method">
+					<span>Method</span>
+					<select name="method">
+						<option value="default">Repository default</option>
+						<option value="squash">Squash</option>
+						<option value="merge">Merge commit</option>
+						<option value="rebase">Rebase</option>
+					</select>
+				</label>
+				<button type="button" class="btn" disabled data-needs-selection hx-post="/pulls/merge" hx-vals='{"action": "auto"}' hx-target="#merge-results" hx-swap="innerHTML" hx-confirm="Enable auto-merge on the selected pull requests? GitHub merges each one when its requirements are met.">
+					@icon("timer")
+					Enable auto-merge
+				</button>
+				<button type="button" class="btn btn-primary" disabled data-needs-selection hx-post="/pulls/merge" hx-vals='{"action": "merge"}' hx-target="#merge-results" hx-swap="innerHTML" hx-confirm="Merge the selected pull requests now?">
+					@icon("merge")
+					Merge selected
+				</button>
+			</div>
+		</form>
+		<div id="merge-results" aria-live="polite"></div>
+	}
+}
+
+templ pullRows(v pullsView) {
+	if v.Note != "" {
+		<p class="note pad pr-note" role="status">{ v.Note }</p>
+	}
+	if v.Total == 0 {
+		<div class="empty">
+			<p class="empty-title">No open pull requests.</p>
+			<p>There are no open pull requests in the repositories that you can push to.</p>
+		</div>
+	} else if len(v.PRs) == 0 {
+		<div class="empty">
+			<p class="empty-title">No pull requests match these filters.</p>
+			if v.Filter.active() {
+				<p><a href="/pulls">Clear filters</a> to see all { strconv.Itoa(v.Total) }.</p>
+			}
+		</div>
+	} else {
+		<ol class="pr-list">
+			for _, p := range v.PRs {
+				@pullRow(v, p)
+			}
+		</ol>
+		<p class="footnote pad">
+			{ plural(len(v.PRs), "pull request", "pull requests") }
+			if len(v.PRs) != v.Total {
+				of { strconv.Itoa(v.Total) }
+			}
+			· read from GitHub { ago(v.At, v.Now) }
+		</p>
+	}
+}
+
+templ pullRow(v pullsView, p pulls.PR) {
+	<li class={ "pr", prStateClass(p) }>
+		<label class="pr-pick">
+			<input type="checkbox" name="pr" value={ p.Key() } disabled?={ !p.Selectable() } { prReady(p)... } aria-label={ "Select " + p.Repo + "#" + strconv.Itoa(p.Number) }/>
+		</label>
+		<span class="rail" aria-hidden="true"></span>
+		<span class="glyph" title={ prStateLabel(p) }>
+			<span aria-hidden="true">{ prStateGlyph(p) }</span>
+			<span class="sr">{ prStateLabel(p) }</span>
+		</span>
+		<span class="where">
+			<span class="org">{ p.Owner }/</span><span class="repo">{ repoShort(p) }</span>
+		</span>
+		<span class="pr-title">
+			<a href={ templ.URL(p.URL) } target="_blank" rel="noopener" title={ p.Title }>
+				<span class="num">#{ strconv.Itoa(p.Number) }</span>
+				{ p.Title }
+			</a>
+			<small class="pr-ref" title={ p.HeadRef + " → " + p.BaseRef }>{ p.HeadRef } → { p.BaseRef }</small>
+		</span>
+		<span class="pr-state">
+			<span class="status">{ prStateLabel(p) }</span>
+			if p.AutoMerge {
+				<span class="pill s-queue" title="GitHub merges it when its requirements are met">Auto-merge on</span>
+			}
+		</span>
+		<span class="actor">
+			{ p.Author }
+			if p.AuthorBot {
+				<small class="muted">bot</small>
+			}
+		</span>
+		<span class="time">
+			<span class="ago" title={ "Opened " + p.CreatedAt.Local().Format("2006-01-02 15:04") }>{ ago(p.CreatedAt, v.Now) }</span>
+		</span>
+	</li>
+}
+
+templ mergeResults(summary string, results []mergeResult) {
+	<section class="card merge-results">
+		<div class="card-head">
+			<h2 class="card-title">{ summary }</h2>
+			<button type="button" class="btn btn-sm" data-dismiss="#merge-results">Close</button>
+		</div>
+		<ul class="merge-result-list">
+			for _, r := range results {
+				<li class={ templ.KV("s-ok", r.OK), templ.KV("s-fail", !r.OK) }>
+					<span class="glyph" aria-hidden="true">
+						if r.OK {
+							✓
+						} else {
+							✕
+						}
+					</span>
+					if r.URL != "" {
+						<a href={ templ.URL(r.URL) } target="_blank" rel="noopener">{ r.Label }</a>
+					} else {
+						<b>{ r.Label }</b>
+					}
+					<span class="muted">{ r.Title }</span>
+					if r.Msg != "" {
+						<span class="merge-msg">{ r.Msg }</span>
+					}
+				</li>
+			}
+		</ul>
+	</section>
+}

@@ -22,6 +22,7 @@ import (
 	"github.com/nklmilojevic/runwall/internal/ingest"
 	"github.com/nklmilojevic/runwall/internal/mcpserver"
 	"github.com/nklmilojevic/runwall/internal/notify"
+	"github.com/nklmilojevic/runwall/internal/pulls"
 	"github.com/nklmilojevic/runwall/internal/scoring"
 	"github.com/nklmilojevic/runwall/internal/store"
 	"github.com/nklmilojevic/runwall/internal/syncer"
@@ -83,7 +84,7 @@ func run(demoMode bool) error {
 		if err := demo.Seed(ctx, st, time.Now()); err != nil {
 			return fmt.Errorf("seed demo data: %w", err)
 		}
-		srv.Syncer, srv.Demo = demo.Syncer{At: time.Now()}, true
+		srv.Syncer, srv.Pulls, srv.Demo = demo.Syncer{At: time.Now()}, &demo.Pulls{At: time.Now()}, true
 		log.Info("demo mode: serving sample data, GitHub is not contacted, everyone is signed in as 'demo'")
 	} else {
 		notifier, err := notify.New(cfg.Notifier, log)
@@ -124,6 +125,7 @@ func run(demoMode bool) error {
 		mcpSrv := &mcpserver.Server{Store: st, Auth: authn, Logs: sy, Costs: costs, Log: log, Now: time.Now, Version: version}
 		mux.Handle("/mcp", mcpSrv.Handler())
 		srv.Syncer, srv.Scorer, srv.Auth = sy, scorer, authn
+		srv.Pulls = pulls.GitHub{GraphQLURL: pulls.GraphQLURL(cfg.APIURL)}
 		go wh.Run(ctx)
 		go sy.Run(ctx)
 		go func() {

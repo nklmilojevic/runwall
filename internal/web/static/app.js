@@ -385,6 +385,57 @@
     jumpToError(e.target.closest(".log"));
   });
 
+  // Pull requests: selection count, "select ready", "select all" and the merge buttons.
+  function pullBoxes(form) {
+    return Array.prototype.slice.call(form.querySelectorAll('input[name="pr"]:not(:disabled)'));
+  }
+  function syncSelection(form) {
+    if (!form) return;
+    var boxes = pullBoxes(form);
+    var picked = boxes.filter(function (b) {
+      return b.checked;
+    }).length;
+    var count = form.querySelector("[data-selected-count]");
+    if (count) count.textContent = picked + " selected";
+    var all = form.querySelector("[data-select-all]");
+    if (all) {
+      all.checked = boxes.length > 0 && picked === boxes.length;
+      all.indeterminate = picked > 0 && picked < boxes.length;
+    }
+    form.querySelectorAll("[data-needs-selection]").forEach(function (b) {
+      b.disabled = picked === 0;
+    });
+  }
+  document.addEventListener("change", function (e) {
+    var form = e.target.closest("[data-merge-form]");
+    if (!form) return;
+    if (e.target.matches("[data-select-all]")) {
+      pullBoxes(form).forEach(function (b) {
+        b.checked = e.target.checked;
+      });
+    }
+    syncSelection(form);
+  });
+  document.addEventListener("click", function (e) {
+    var btn = e.target.closest("[data-select-ready]");
+    if (btn) {
+      var form = btn.closest("[data-merge-form]");
+      pullBoxes(form).forEach(function (b) {
+        b.checked = b.hasAttribute("data-ready");
+      });
+      syncSelection(form);
+      return;
+    }
+    var close = e.target.closest("[data-dismiss]");
+    if (close) {
+      var target = document.querySelector(close.getAttribute("data-dismiss"));
+      if (target) target.innerHTML = "";
+    }
+  });
+  document.addEventListener("htmx:afterSwap", function (e) {
+    syncSelection(e.detail.target.closest("[data-merge-form]"));
+  });
+
   // Live connection indicator
   function setLive(state, text) {
     var el = document.getElementById("live");
