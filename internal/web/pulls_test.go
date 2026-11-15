@@ -25,6 +25,15 @@ type fakePulls struct {
 	err    error
 	calls  []string
 	fail   map[int]error
+	detail pulls.Detail
+	detErr error
+}
+
+func (f *fakePulls) Detail(_ context.Context, _ *github.Client, repo store.Repo, number int) (pulls.Detail, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, fmt.Sprintf("detail %s#%d", repo.FullName, number))
+	return f.detail, f.detErr
 }
 
 func (f *fakePulls) List(_ context.Context, _ *github.Client, repos []store.Repo) ([]pulls.PR, error) {
@@ -247,5 +256,97 @@ func TestPullsExpiredSignIn(t *testing.T) {
 	resp, _ = postForm(t, e, "/pulls/merge", user, url.Values{"csrf": {"csrf-user"}, "action": {"merge"}, "pr": {key(1, 5, "squash")}})
 	if resp.StatusCode != http.StatusUnauthorized || resp.Header.Get("HX-Redirect") == "" || len(fp.calls) != 0 {
 		t.Errorf("merge: %d %q %q", resp.StatusCode, resp.Header.Get("HX-Redirect"), fp.calls)
+	}
+}
+
+func TestDemoListShowsKritikaAndRunChips(t *testing.T) {
+	e := newDemo(t)
+	e.s.Pulls = &demo.Pulls{At: now}
+	_, body := get(t, e.srv.URL+"/pulls", nil, nil)
+	for _, want := range []string{"kritika 5/5", "kritika 3/5", "old commit", `class="kritika k-stale"`, `class="chip s-ok"`, `class="chip s-fail"`,
+		`href="/runs/9000`, `href="/pulls/1/43"`, "Kritika 5/5 on head", "Open on GitHub"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("list lacks %q", want)
+		}
+	}
+	_, body = get(t, e.srv.URL+"/pulls?kritika=1", nil, map[string]string{"HX-Request": "true", "HX-Target": "pulls"})
+	// 5/5 on head: #40, #49 and #58. #55 has 5/5 for an old commit, #43 has 4/5.
+	for n, want := range map[string]bool{"#40": true, "#49": true, "#58": true, "#55": false, "#43": false} {
+		if got := strings.Contains(body, `<span class="num">`+n+`</span>`); got != want {
+			t.Errorf("kritika filter: %s listed=%v, want %v", n, got, want)
+		}
+	}
+}
+
+func TestDemoPullDetail(t *testing.T) {
+	e := newDemo(t)
+	e.s.Pulls = &demo.Pulls{At: now}
+	code, body := get(t, e.srv.URL+"/pulls/1/46", nil, nil)
+	if code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+	for _, want := range []string{"Rework subscriber import batching", "Needs review", "internal/importer/batch.go:88", "outdated",
+		"Checks on", "test ↗", "Workflow runs on", `hx-get="/pulls/1/46/runs?sha=`, `hx-trigger="sse:update throttle:1s"`,
+		"Enable auto-merge", `name="pr"`, "Repository default (squash)", `class="kritika-score kritika s-fail"`,
+		// The merge buttons sit inside #pr-detail; they must not inherit its hx-select, or their results vanish.
+		`hx-select="#pr-detail" hx-swap="outerHTML" hx-disinherit="*"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("detail lacks %q", want)
+		}
+	}
+	if !strings.Contains(body, "acme/api") || !strings.Contains(body, "/runs/9000") {
+		t.Error("detail doesn't list the head commit's runs")
+	}
+
+	_, frag := get(t, e.srv.URL+"/pulls/1/46/runs?sha="+strings.Repeat("0", 32)+"c0ffee02", nil, map[string]string{"HX-Request": "true"})
+	if strings.Contains(frag, "<html") || !strings.Contains(frag, "/runs/9000") {
+		t.Errorf("runs fragment:\n%s", frag)
+	}
+	if code, _ := get(t, e.srv.URL+"/pulls/1/46/runs?sha=nothex", nil, nil); code != http.StatusBadRequest {
+		t.Errorf("bad sha: %d", code)
+	}
+	if code, _ := get(t, e.srv.URL+"/pulls/1/999", nil, nil); code != http.StatusNotFound {
+		t.Errorf("unknown PR: %d", code)
+	}
+
+	// After a merge the page says so and offers no merge button.
+	prs, _ := e.s.Pulls.List(context.Background(), nil, []store.Repo{{ID: 1, Owner: "acme", Name: "api", FullName: "acme/api"}})
+	postForm(t, e, "/pulls/merge", nil, url.Values{"csrf": {"demo"}, "action": {"merge"}, "pr": {prs[0].Key()}})
+	_, body = get(t, e.srv.URL+pullHref(prs[0]), nil, nil)
+	if !strings.Contains(body, "Merged") || strings.Contains(body, `hx-vals='{"action": "merge"}'`) {
+		t.Error("merged PR still offers a merge")
+	}
+}
+
+func TestPullDetailAccess(t *testing.T) {
+	e, user, kiosk := newAuthed(t)
+	fp := withPulls(e, &fakePulls{detail: pulls.Detail{PR: pulls.PR{RepoID: 2, Repo: "acme/web", Owner: "acme", Number: 6, Title: "Read-only PR",
+		HeadSHA: strings.Repeat("a", 40), Mergeable: "MERGEABLE", State: "CLEAN"}, Status: "OPEN"}})
+
+	code, body := get(t, e.srv.URL+"/pulls/2/6", user, nil)
+	if code != http.StatusOK || !strings.Contains(body, "Read-only PR") || !strings.Contains(body, "You need write access to this repository to merge.") {
+		t.Fatalf("read-only repo: %d", code)
+	}
+	if code, _ := get(t, e.srv.URL+"/pulls/3/7", user, nil); code != http.StatusNotFound {
+		t.Errorf("invisible repo: %d", code)
+	}
+	if code, _ := get(t, e.srv.URL+"/pulls/1/5", kiosk, nil); code != http.StatusNotFound {
+		t.Errorf("kiosk: %d", code)
+	}
+	if strings.Join(fp.calls, "|") != "detail acme/web#6" {
+		t.Errorf("GitHub asked for %q", fp.calls)
+	}
+
+	fp.detErr = fmt.Errorf("%w: statuses", pulls.ErrPermission)
+	if _, body := get(t, e.srv.URL+"/pulls/2/6", user, nil); !strings.Contains(body, "lacks a permission") || !strings.Contains(body, "Read-only PR") {
+		t.Error("partial answer with a permission error isn't shown with a note")
+	}
+	fp.detail, fp.detErr = pulls.Detail{}, errors.New("boom")
+	if code, _ := get(t, e.srv.URL+"/pulls/2/6", user, nil); code != http.StatusBadGateway {
+		t.Errorf("GitHub failure: %d", code)
+	}
+	fp.detErr = pulls.ErrNotFound
+	if code, _ := get(t, e.srv.URL+"/pulls/2/6", user, nil); code != http.StatusNotFound {
+		t.Errorf("not found: %d", code)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +25,7 @@ type PullSource interface {
 	List(ctx context.Context, gh *github.Client, repos []store.Repo) ([]pulls.PR, error)
 	Merge(ctx context.Context, gh *github.Client, repo store.Repo, t pulls.Target, method string) error
 	EnableAutoMerge(ctx context.Context, gh *github.Client, repo store.Repo, t pulls.Target, method string) error
+	Detail(ctx context.Context, gh *github.Client, repo store.Repo, number int) (pulls.Detail, error)
 }
 
 // pullCacheTTL keeps filter changes from re-reading GitHub. Refresh and merges bypass it.
@@ -113,17 +115,18 @@ func (s *Server) openPulls(ctx context.Context, v *auth.Viewer, refresh bool) (p
 }
 
 type pullFilter struct {
-	Owner, Repo, Author string
-	ReadyOnly, Drafts   bool
+	Owner, Repo, Author        string
+	ReadyOnly, Drafts, Kritika bool
 }
 
 func parsePullFilter(q url.Values) pullFilter {
-	return pullFilter{Owner: q.Get("org"), Repo: q.Get("repo"), Author: q.Get("author"), ReadyOnly: q.Get("ready") == "1", Drafts: q.Get("drafts") == "1"}
+	return pullFilter{Owner: q.Get("org"), Repo: q.Get("repo"), Author: q.Get("author"),
+		ReadyOnly: q.Get("ready") == "1", Drafts: q.Get("drafts") == "1", Kritika: q.Get("kritika") == "1"}
 }
 
 func (f pullFilter) keep(p pulls.PR) bool {
 	return (f.Owner == "" || p.Owner == f.Owner) && (f.Repo == "" || p.Repo == f.Repo) && (f.Author == "" || p.Author == f.Author) &&
-		(!f.ReadyOnly || p.Ready()) && (f.Drafts || !p.Draft)
+		(!f.ReadyOnly || p.Ready()) && (f.Drafts || !p.Draft) && (!f.Kritika || p.KritikaPass())
 }
 
 func (f pullFilter) active() bool { return f != pullFilter{} }
@@ -136,9 +139,12 @@ type pullsView struct {
 	Authors []string
 	Bots    map[string]bool
 	PRs     []pulls.PR
+	Runs    map[store.Head][]store.Run // the latest run of each workflow on each head commit
 	Total   int
 	At      time.Time
 	Note    string
+	// HasKritika shows the kritika filter only where kritika reviews pull requests.
+	HasKritika bool
 }
 
 func pullNote(err error) string {
@@ -179,6 +185,7 @@ func (s *Server) pullRequests(w http.ResponseWriter, r *http.Request, v *auth.Vi
 		pv.Repos = append(pv.Repos, p.Repo)
 		pv.Authors = append(pv.Authors, p.Author)
 		pv.Bots[p.Author] = p.AuthorBot
+		pv.HasKritika = pv.HasKritika || p.Kritika != nil
 		if pv.Filter.keep(p) {
 			pv.PRs = append(pv.PRs, p)
 		}
@@ -186,6 +193,14 @@ func (s *Server) pullRequests(w http.ResponseWriter, r *http.Request, v *auth.Vi
 	for _, l := range []*[]string{&pv.Owners, &pv.Repos, &pv.Authors} {
 		slices.Sort(*l)
 		*l = slices.Compact(*l)
+	}
+	heads := make([]store.Head, 0, len(pv.PRs))
+	for _, p := range pv.PRs {
+		heads = append(heads, store.Head{RepoID: p.RepoID, SHA: p.HeadSHA})
+	}
+	if pv.Runs, err = s.Store.HeadRuns(ctx, heads); err != nil {
+		s.fail(w, err)
+		return
 	}
 	if isHTMX(r) && r.Header.Get("HX-Target") == "pulls" {
 		s.render(w, r, pullRows(pv))
@@ -345,4 +360,100 @@ func (s *Server) mergePulls(w http.ResponseWriter, r *http.Request, v *auth.View
 	b, _ := json.Marshal(map[string]any{"toast": map[string]string{"kind": kind, "message": summary}, "pulls-changed": true})
 	w.Header().Set("HX-Trigger", string(b))
 	s.render(w, r, mergeResults(summary, results))
+}
+
+type pullDetailView struct {
+	shell
+	D      pulls.Detail
+	Runs   []store.FeedRun
+	CanAct bool
+	Note   string
+}
+
+// pullTarget reads /pulls/{id}/{number} and loads the repo, if the viewer can see it.
+func (s *Server) pullTarget(w http.ResponseWriter, r *http.Request, v *auth.Viewer) (store.Repo, int, bool) {
+	if v.Kiosk != nil {
+		http.NotFound(w, r)
+		return store.Repo{}, 0, false
+	}
+	id, ok := pathID(r)
+	number, err := strconv.Atoi(r.PathValue("number"))
+	if !ok || err != nil || number <= 0 {
+		http.NotFound(w, r)
+		return store.Repo{}, 0, false
+	}
+	if visible, _ := s.Store.CanSeeRepo(r.Context(), v.Scope, id); !visible {
+		http.NotFound(w, r)
+		return store.Repo{}, 0, false
+	}
+	repo, err := s.Store.GetRepo(r.Context(), id)
+	if err != nil {
+		http.NotFound(w, r)
+		return store.Repo{}, 0, false
+	}
+	return repo, number, true
+}
+
+// headRuns lists the workflow runs on a pull request's head commit, from the local database.
+func (s *Server) headRuns(ctx context.Context, v *auth.Viewer, repoID int64, sha string) ([]store.FeedRun, error) {
+	return s.Store.Feed(ctx, store.FeedFilter{Scope: v.Scope, RepoID: repoID, HeadSHA: sha,
+		ShowBots: true, ShowForks: true, ShowArchived: true, Limit: 50}, s.Now().Add(-s.StuckThreshold))
+}
+
+func (s *Server) pullDetail(w http.ResponseWriter, r *http.Request, v *auth.Viewer) {
+	repo, number, ok := s.pullTarget(w, r, v)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	gh, err := s.viewerGitHub(ctx, v)
+	if err != nil {
+		login := "/login?next=" + url.QueryEscape(r.URL.Path)
+		if isHTMX(r) {
+			w.Header().Set("HX-Redirect", login)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		http.Redirect(w, r, login, http.StatusFound)
+		return
+	}
+	d, err := s.Pulls.Detail(ctx, gh, repo, number)
+	pv := pullDetailView{shell: s.shell(r, v, "pulls", repo.FullName+"#"+strconv.Itoa(number)), D: d, CanAct: v.CanAct(ctx, repo.ID)}
+	switch {
+	case errors.Is(err, pulls.ErrNotFound):
+		http.NotFound(w, r)
+		return
+	case err != nil && d.Number == 0:
+		s.Log.Warn("read pull request", "repo", repo.FullName, "number", number, "err", err)
+		toast(w, "error", pullErrMessage(err))
+		http.Error(w, "Couldn't read this pull request from GitHub: "+pullErrMessage(err), http.StatusBadGateway)
+		return
+	case err != nil:
+		s.Log.Warn("read pull request", "repo", repo.FullName, "number", number, "err", err)
+		pv.Note = pullNote(err)
+	}
+	if pv.Runs, err = s.headRuns(ctx, v, repo.ID, d.HeadSHA); err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.render(w, r, pullDetailPage(pv))
+}
+
+// pullRunsFragment re-renders a pull request's runs when a run changes; it reads only the local database.
+func (s *Server) pullRunsFragment(w http.ResponseWriter, r *http.Request, v *auth.Viewer) {
+	repo, _, ok := s.pullTarget(w, r, v)
+	if !ok {
+		return
+	}
+	sha := r.URL.Query().Get("sha")
+	if len(sha) != 40 || strings.Trim(sha, "0123456789abcdef") != "" {
+		http.Error(w, "Bad commit.", http.StatusBadRequest)
+		return
+	}
+	runs, err := s.headRuns(r.Context(), v, repo.ID, sha)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	s.render(w, r, recentList(runs, s.Now()))
 }

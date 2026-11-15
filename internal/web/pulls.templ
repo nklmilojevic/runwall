@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/nklmilojevic/runwall/internal/store"
+
 	"github.com/nklmilojevic/runwall/internal/pulls"
 )
 
@@ -49,6 +51,32 @@ func prStateGlyph(p pulls.PR) string {
 	return s.glyph()
 }
 
+func pullHref(p pulls.PR) string {
+	return "/pulls/" + strconv.FormatInt(p.RepoID, 10) + "/" + strconv.Itoa(p.Number)
+}
+
+func kritikaClass(p pulls.PR) string {
+	switch {
+	case !p.KritikaCurrent():
+		return "kritika k-stale"
+	case p.Kritika.Score == 5:
+		return "kritika s-ok"
+	case p.Kritika.Score == 4:
+		return "kritika s-run"
+	}
+	return "kritika s-fail"
+}
+
+func kritikaTitle(p pulls.PR) string {
+	score := strconv.Itoa(p.Kritika.Score) + "/5"
+	if !p.KritikaCurrent() {
+		return "kritika gave " + score + " to an older commit (" + shortSHA(p.Kritika.ReviewedSHA) + "). The head is " + shortSHA(p.HeadSHA) + "."
+	}
+	return "kritika gave " + score + " to the head commit " + shortSHA(p.HeadSHA) + "."
+}
+
+func runStateOf(r store.Run) state { return statusState(r.Status, r.Conclusion) }
+
 func repoShort(p pulls.PR) string {
 	name, _ := strings.CutPrefix(p.Repo, p.Owner+"/")
 	return name
@@ -92,11 +120,14 @@ templ pullsPage(v pullsView) {
 			<div class="toggles">
 				@toggle("ready", "Ready to merge only", v.Filter.ReadyOnly)
 				@toggle("drafts", "Show drafts", v.Filter.Drafts)
+				if v.HasKritika || v.Filter.Kritika {
+					@toggle("kritika", "Kritika 5/5 on head", v.Filter.Kritika)
+				}
 			</div>
 			<noscript><button type="submit">Apply</button></noscript>
 		</form>
 		<form id="merge-form" class="card feed-card pr-card" data-merge-form>
-			<div id="pulls" hx-get="/pulls" hx-include="#pull-filters" hx-vals='{"refresh": "1"}' hx-trigger="pulls-changed from:body" hx-swap="innerHTML">
+			<div id="pulls" hx-get="/pulls" hx-include="#pull-filters" hx-vals='{"refresh": "1"}' hx-trigger="pulls-changed from:body" hx-swap="innerHTML" hx-disinherit="*">
 				@pullRows(v)
 			</div>
 			<div class="merge-bar">
@@ -175,14 +206,18 @@ templ pullRow(v pullsView, p pulls.PR) {
 			<span class="org">{ p.Owner }/</span><span class="repo">{ repoShort(p) }</span>
 		</span>
 		<span class="pr-title">
-			<a href={ templ.URL(p.URL) } target="_blank" rel="noopener" title={ p.Title }>
+			<a href={ templ.URL(pullHref(p)) } title={ p.Title }>
 				<span class="num">#{ strconv.Itoa(p.Number) }</span>
 				{ p.Title }
 			</a>
-			<small class="pr-ref" title={ p.HeadRef + " → " + p.BaseRef }>{ p.HeadRef } → { p.BaseRef }</small>
+			<span class="pr-sub">
+				<small class="pr-ref" title={ p.HeadRef + " → " + p.BaseRef }>{ p.HeadRef } → { p.BaseRef }</small>
+				@runChips(v.Runs[store.Head{RepoID: p.RepoID, SHA: p.HeadSHA}])
+			</span>
 		</span>
 		<span class="pr-state">
 			<span class="status">{ prStateLabel(p) }</span>
+			@kritikaBadge(p)
 			if p.AutoMerge {
 				<span class="pill s-queue" title="GitHub merges it when its requirements are met">Auto-merge on</span>
 			}
@@ -195,6 +230,9 @@ templ pullRow(v pullsView, p pulls.PR) {
 		</span>
 		<span class="time">
 			<span class="ago" title={ "Opened " + p.CreatedAt.Local().Format("2006-01-02 15:04") }>{ ago(p.CreatedAt, v.Now) }</span>
+			<a class="gh-link" href={ templ.URL(p.URL) } target="_blank" rel="noopener" title="Open on GitHub" aria-label={ "Open " + p.Repo + "#" + strconv.Itoa(p.Number) + " on GitHub" }>
+				@icon("external")
+			</a>
 		</span>
 	</li>
 }
@@ -228,4 +266,234 @@ templ mergeResults(summary string, results []mergeResult) {
 			}
 		</ul>
 	</section>
+}
+
+templ kritikaBadge(p pulls.PR) {
+	if p.Kritika != nil {
+		<a class={ kritikaClass(p) } href={ templ.URL(p.Kritika.URL) } target="_blank" rel="noopener" title={ kritikaTitle(p) }>
+			kritika { strconv.Itoa(p.Kritika.Score) }/5
+			if !p.KritikaCurrent() {
+				<span class="k-note">old commit</span>
+			}
+		</a>
+	}
+}
+
+templ runChips(runs []store.Run) {
+	if len(runs) > 0 {
+		<span class="chips">
+			for _, r := range runs {
+				<a class={ "chip", "s-" + string(runStateOf(r)) } href={ templ.URL(runHref(r.ID)) } title={ r.WorkflowName + ": " + runStateOf(r).label() }>
+					<span aria-hidden="true">{ runStateOf(r).glyph() }</span>
+					{ r.WorkflowName }
+				</a>
+			}
+		</span>
+	}
+}
+
+func prStatusLabel(d pulls.Detail) (string, string) {
+	switch d.Status {
+	case "MERGED":
+		return "s-wait", "Merged"
+	case "CLOSED":
+		return "s-cancel", "Closed"
+	}
+	return prStateClass(d.PR), prStateLabel(d.PR)
+}
+
+func checkState(c pulls.Check) state { return statusState(c.Status, c.Conclusion) }
+
+func checkHref(c pulls.Check) (string, bool) {
+	if c.RunID != 0 {
+		return runHref(c.RunID), false
+	}
+	return c.URL, true
+}
+
+func diffStat(d pulls.Detail) string {
+	return "+" + strconv.Itoa(d.Additions) + " −" + strconv.Itoa(d.Deletions) + " · " + plural(d.ChangedFiles, "file", "files")
+}
+
+func findingWhere(f pulls.Finding) string {
+	if f.Line > 0 {
+		return f.Path + ":" + strconv.Itoa(f.Line)
+	}
+	return f.Path
+}
+
+templ pullDetailPage(v pullDetailView) {
+	@layout(v.shell) {
+		<nav class="crumbs" aria-label="Breadcrumb">
+			<a href="/pulls">Pull requests</a>
+			<span>/</span>
+			<span>{ v.D.Repo }</span>
+		</nav>
+		@pullDetailBody(v)
+		<div id="merge-results" aria-live="polite"></div>
+		<section class="card pr-runs-card">
+			<div class="card-head">
+				<h2 class="card-title">Workflow runs on { shortSHA(v.D.HeadSHA) }</h2>
+				<small class="muted">live</small>
+			</div>
+			<div id="pr-runs" hx-get={ pullHref(v.D.PR) + "/runs?sha=" + v.D.HeadSHA } hx-trigger="sse:update throttle:1s" hx-swap="innerHTML">
+				@recentList(v.Runs, v.Now)
+			</div>
+		</section>
+	}
+}
+
+templ pullDetailBody(v pullDetailView) {
+	<div id="pr-detail" hx-get={ pullHref(v.D.PR) } hx-trigger="pulls-changed from:body" hx-select="#pr-detail" hx-swap="outerHTML" hx-disinherit="*">
+		<div class="page-head page-head-row">
+			<div>
+				<h1>
+					<span>{ v.D.Title } <span class="muted">#{ strconv.Itoa(v.D.Number) }</span></span>
+				</h1>
+				<p>
+					{ v.D.Author }
+					if v.D.AuthorBot {
+						<span class="muted">(bot)</span>
+					}
+					· <span class="pr-ref">{ v.D.HeadRef } → { v.D.BaseRef }</span>
+					if v.D.Status == "OPEN" {
+						· { diffStat(v.D) }
+					}
+				</p>
+			</div>
+			<div class="head-actions">
+				<a class="btn" href={ templ.URL(v.D.URL) } target="_blank" rel="noopener">
+					@icon("external")
+					GitHub
+				</a>
+			</div>
+		</div>
+		if v.Note != "" {
+			<p class="note card pad pr-note" role="status">{ v.Note }</p>
+		}
+		<div class="split pr-split">
+			<section class="card">
+				<div class="card-head">
+					<h2 class="card-title">kritika</h2>
+					if v.D.Kritika != nil {
+						<a class="link" href={ templ.URL(v.D.Kritika.URL) } target="_blank" rel="noopener">Summary ↗</a>
+					}
+				</div>
+				if v.D.Kritika == nil {
+					<p class="note pad">kritika hasn't reviewed this pull request.</p>
+				} else {
+					<div class="pad kritika-head">
+						<span class={ "kritika-score", kritikaClass(v.D.PR) }>{ strconv.Itoa(v.D.Kritika.Score) }<small>/5</small></span>
+						<span class="muted">{ kritikaTitle(v.D.PR) }</span>
+					</div>
+					if len(v.D.Findings) == 0 {
+						<p class="note pad">No open kritika findings.</p>
+					} else {
+						<ul class="findings">
+							for _, f := range v.D.Findings {
+								<li class={ templ.KV("outdated", f.Outdated) }>
+									<a href={ templ.URL(f.URL) } target="_blank" rel="noopener" class="mono">{ findingWhere(f) }</a>
+									if f.Outdated {
+										<span class="pill s-skip">outdated</span>
+									}
+									<p>{ f.Text }</p>
+								</li>
+							}
+						</ul>
+					}
+				}
+			</section>
+			<section class="card">
+				<div class="card-head">
+					<h2 class="card-title">Merge</h2>
+				</div>
+				<div class="pad pr-merge">
+					<p class={ "pr-status", prStatusClass(v.D) }>
+						<span class="glyph" aria-hidden="true">{ prStatusGlyph(v.D) }</span>
+						<b>{ prStatusText(v.D) }</b>
+						if v.D.AutoMerge && v.D.Status == "OPEN" {
+							<span class="pill s-queue">Auto-merge on</span>
+						}
+					</p>
+					if v.D.Status == "OPEN" && v.CanAct && v.D.Selectable() {
+						<form class="pr-merge-form">
+							<input type="hidden" name="pr" value={ v.D.Key() }/>
+							<label class="field merge-method">
+								<span>Method</span>
+								<select name="method">
+									<option value="default">Repository default ({ v.D.DefaultMethod })</option>
+									for _, m := range v.D.Methods {
+										<option value={ m }>{ methodLabel(m) }</option>
+									}
+								</select>
+							</label>
+							<div class="head-actions">
+								if v.D.AutoMergeAllowed && !v.D.AutoMerge && !v.D.Ready() {
+									<button type="button" class="btn" hx-post="/pulls/merge" hx-vals='{"action": "auto"}' hx-target="#merge-results" hx-swap="innerHTML">
+										@icon("timer")
+										Enable auto-merge
+									</button>
+								}
+								<button type="button" class="btn btn-primary" hx-post="/pulls/merge" hx-vals='{"action": "merge"}' hx-target="#merge-results" hx-swap="innerHTML" hx-confirm="Merge this pull request now?">
+									@icon("merge")
+									Merge
+								</button>
+							</div>
+						</form>
+					} else if v.D.Status == "OPEN" && !v.CanAct {
+						<p class="note">You need write access to this repository to merge.</p>
+					}
+				</div>
+			</section>
+		</div>
+		<section class="card">
+			<div class="card-head">
+				<h2 class="card-title">Checks on { shortSHA(v.D.HeadSHA) }</h2>
+			</div>
+			if len(v.D.CheckRuns) == 0 {
+				<p class="note pad">No checks reported on the head commit.</p>
+			} else {
+				<ul class="check-list">
+					for _, c := range v.D.CheckRuns {
+						<li class={ "s-" + string(checkState(c)) }>
+							<span class="glyph" title={ checkState(c).label() }>
+								<span aria-hidden="true">{ checkState(c).glyph() }</span>
+								<span class="sr">{ checkState(c).label() }</span>
+							</span>
+							if href, external := checkHref(c); href == "" {
+								<b>{ c.Name }</b>
+							} else if external {
+								<a href={ templ.URL(href) } target="_blank" rel="noopener">{ c.Name } ↗</a>
+							} else {
+								<a href={ templ.URL(href) }>{ c.Name }</a>
+							}
+							<span class="muted">{ c.Description }</span>
+						</li>
+					}
+				</ul>
+			}
+		</section>
+	</div>
+}
+
+func prStatusClass(d pulls.Detail) string { c, _ := prStatusLabel(d); return c }
+func prStatusText(d pulls.Detail) string  { _, l := prStatusLabel(d); return l }
+func prStatusGlyph(d pulls.Detail) string {
+	switch d.Status {
+	case "MERGED":
+		return "✓"
+	case "CLOSED":
+		return "⊘"
+	}
+	return prStateGlyph(d.PR)
+}
+
+func methodLabel(m string) string {
+	switch m {
+	case pulls.MethodSquash:
+		return "Squash"
+	case pulls.MethodRebase:
+		return "Rebase"
+	}
+	return "Merge commit"
 }

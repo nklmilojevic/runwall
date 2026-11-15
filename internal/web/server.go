@@ -99,6 +99,8 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /workflows", s.protect(s.workflows))
 	mux.HandleFunc("GET /workflows/{repo}/{workflow}", s.protect(s.workflowDetail))
 	mux.HandleFunc("GET /pulls", s.protect(s.pullRequests))
+	mux.HandleFunc("GET /pulls/{id}/{number}", s.protect(s.pullDetail))
+	mux.HandleFunc("GET /pulls/{id}/{number}/runs", s.protect(s.pullRunsFragment))
 	mux.HandleFunc("GET /repos", s.protect(s.repos))
 	mux.HandleFunc("GET /repos/{id}", s.protect(s.repoDetail))
 	mux.HandleFunc("GET /settings", s.protect(s.settings))

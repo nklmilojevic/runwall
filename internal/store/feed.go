@@ -102,6 +102,7 @@ type FeedFilter struct {
 	RepoID       int64
 	WorkflowID   int64
 	Branch       string
+	HeadSHA      string
 	Event        string
 	Actor        string
 	Status       StatusFilter
@@ -173,6 +174,10 @@ func (s *Store) Feed(ctx context.Context, f FeedFilter, stuckCutoff time.Time) (
 	if f.Branch != "" {
 		where = append(where, `r.head_branch = ?`)
 		args = append(args, f.Branch)
+	}
+	if f.HeadSHA != "" {
+		where = append(where, `r.head_sha = ?`)
+		args = append(args, f.HeadSHA)
 	}
 	if f.Event != "" {
 		where = append(where, `r.event = ?`)
@@ -338,4 +343,54 @@ func (s *Store) ActorOwners(ctx context.Context, sc Scope) (map[string][]string,
 		out[actor] = append(out[actor], owner)
 	}
 	return out, rows.Err()
+}
+
+// Head is one commit of one repository.
+type Head struct {
+	RepoID int64
+	SHA    string
+}
+
+// headChunk keeps each query well under SQLite's limit on bound parameters.
+const headChunk = 200
+
+// HeadRuns returns, for each commit, the latest run of each workflow on it, ordered by workflow name.
+func (s *Store) HeadRuns(ctx context.Context, heads []Head) (map[Head][]Run, error) {
+	out := map[Head][]Run{}
+	for i := 0; i < len(heads); i += headChunk {
+		chunk := heads[i:min(i+headChunk, len(heads))]
+		args := make([]any, 0, 2*len(chunk))
+		for _, h := range chunk {
+			args = append(args, h.RepoID, h.SHA)
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT `+runColumns+` FROM runs r
+			WHERE (r.repo_id, r.head_sha) IN (VALUES `+strings.TrimSuffix(strings.Repeat("(?, ?), ", len(chunk)), ", ")+`)
+			ORDER BY r.workflow_name COLLATE NOCASE, r.workflow_id, r.created_at DESC, r.id DESC`, args...)
+		if err != nil {
+			return nil, err
+		}
+		seen := map[Head]map[int64]bool{}
+		for rows.Next() {
+			r, err := scanRun(rows)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			h := Head{RepoID: r.RepoID, SHA: r.HeadSHA}
+			if seen[h] == nil {
+				seen[h] = map[int64]bool{}
+			}
+			if seen[h][r.WorkflowID] {
+				continue
+			}
+			seen[h][r.WorkflowID] = true
+			out[h] = append(out[h], r)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }

@@ -88,7 +88,11 @@ const repoJSON = `{
 		"headRefName": "renovate/x", "baseRefName": "main", "headRefOid": "0123456789abcdef",
 		"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "reviewDecision": null, "autoMergeRequest": null,
 		"author": {"__typename": "Bot", "login": "renovate"},
-		"commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}
+		"commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]},
+		"comments": {"nodes": [
+			{"author": {"login": "renovate"}, "body": "Confidence Score: 1/5", "url": "u1"},
+			{"author": {"login": "kritikal-github"}, "body": "<!-- kritika:pr-7 -->\n### Confidence Score: 5/5\n<sub>Last reviewed commit: [fix](https://github.com/acme/api/commit/0123456789abcdef0123456789abcdef01234567)</sub>", "url": "https://github.com/acme/api/pull/7#issuecomment-1"}
+		]}
 	}]}
 }`
 
@@ -126,7 +130,8 @@ func TestListReadsReposAndKeepsPartialResults(t *testing.T) {
 	}
 	p := prs[0]
 	if p.RepoID != 1 || p.Repo != "acme/api" || p.Number != 7 || !p.AuthorBot || p.Author != "renovate" || p.Checks != "SUCCESS" ||
-		p.DefaultMethod != MethodSquash || strings.Join(p.Methods, ",") != "squash,rebase" || !p.Ready() || p.HeadSHA != "0123456789abcdef" {
+		p.DefaultMethod != MethodSquash || strings.Join(p.Methods, ",") != "squash,rebase" || !p.Ready() || p.HeadSHA != "0123456789abcdef" ||
+		p.Kritika == nil || p.Kritika.Score != 5 || p.Kritika.URL != "https://github.com/acme/api/pull/7#issuecomment-1" || p.KritikaCurrent() {
 		t.Fatalf("pr = %+v", p)
 	}
 }
@@ -201,5 +206,96 @@ func TestEnableAutoMerge(t *testing.T) {
 	answer = `{"data": null, "errors": [{"type": "FORBIDDEN", "message": "Resource not accessible by integration"}]}`
 	if err := g.EnableAutoMerge(context.Background(), gh, store.Repo{}, t1, MethodRebase); !errors.Is(err, ErrPermission) {
 		t.Fatalf("err = %v, want ErrPermission", err)
+	}
+}
+
+func TestParseKritika(t *testing.T) {
+	head := "0123456789abcdef0123456789abcdef01234567"
+	body := "<!-- kritika:pr-3 -->\nConfidence Score: 3/5\n...\nConfidence Score: 4/5\n" +
+		"Last reviewed commit: [old](https://github.com/a/b/commit/" + strings.Repeat("9", 40) + ")\n" +
+		"Last reviewed commit: [new](https://ghe.example.com/a/b/commit/" + head + ")"
+	k := parseKritika("kritikal-github", body, "u")
+	if k == nil || k.Score != 4 || k.ReviewedSHA != head {
+		t.Fatalf("got %+v", k)
+	}
+	if parseKritika("someone", body, "u") != nil {
+		t.Error("accepted a comment from another author")
+	}
+	if parseKritika("kritikal-github", "Confidence Score: 5/5", "u") != nil {
+		t.Error("accepted a kritika comment without the summary marker")
+	}
+	if parseKritika("kritikal-github", "<!-- kritika:pr-3 --> Reviewing…", "u") != nil {
+		t.Error("accepted a summary without a score")
+	}
+	pr := PR{HeadSHA: head, Kritika: &Kritika{Score: 5, ReviewedSHA: head}}
+	if !pr.KritikaPass() {
+		t.Error("5/5 on head should pass")
+	}
+	pr.HeadSHA = strings.Repeat("1", 40)
+	if pr.KritikaPass() || pr.KritikaCurrent() {
+		t.Error("a review of an older commit should not pass")
+	}
+}
+
+func TestDetail(t *testing.T) {
+	answer := `{"data": {"repository": {
+		"viewerDefaultMergeMethod": "MERGE", "mergeCommitAllowed": true, "squashMergeAllowed": false, "rebaseMergeAllowed": false, "autoMergeAllowed": false,
+		"pullRequest": {
+			"id": "PR_9", "number": 9, "title": "Add thing", "url": "https://github.com/acme/api/pull/9", "isDraft": false,
+			"createdAt": "2026-11-01T10:00:00Z", "updatedAt": "2026-11-02T10:00:00Z",
+			"headRefName": "feat/x", "baseRefName": "main", "headRefOid": "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
+			"mergeable": "MERGEABLE", "mergeStateStatus": "BLOCKED", "reviewDecision": "REVIEW_REQUIRED", "autoMergeRequest": null,
+			"author": {"__typename": "User", "login": "monalisa"},
+			"commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "PENDING"}}}]},
+			"comments": {"nodes": []},
+			"state": "OPEN", "additions": 10, "deletions": 2, "changedFiles": 3,
+			"reviewThreads": {"nodes": [
+				{"isResolved": false, "isOutdated": false, "path": "a.go", "line": 4, "comments": {"nodes": [{"author": {"login": "kritikal-github"}, "url": "t1", "bodyText": "Handle   the\nerror."}]}},
+				{"isResolved": true, "isOutdated": false, "path": "b.go", "line": 1, "comments": {"nodes": [{"author": {"login": "kritikal-github"}, "url": "t2", "bodyText": "fixed"}]}},
+				{"isResolved": false, "isOutdated": true, "path": "c.go", "line": null, "comments": {"nodes": [{"author": {"login": "octocat"}, "url": "t3", "bodyText": "human"}]}}
+			]},
+			"checks": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": [
+				{"__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "FAILURE", "detailsUrl": "https://ci/test", "url": "https://github.com/x", "checkSuite": {"workflowRun": {"databaseId": 555}}},
+				{"__typename": "CheckRun", "name": "external", "status": "IN_PROGRESS", "conclusion": null, "detailsUrl": null, "url": "https://github.com/y", "checkSuite": {"workflowRun": null}},
+				{"__typename": "StatusContext", "context": "ci/jenkins", "state": "PENDING", "targetUrl": "https://jenkins", "description": "Build running"}
+			]}}}}]}
+		}
+	}}}`
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /graphql", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, answer) })
+	gh, g := client(t, mux)
+	repo := store.Repo{ID: 1, Owner: "acme", Name: "api", FullName: "acme/api"}
+
+	d, err := g.Detail(context.Background(), gh, repo, 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Status != "OPEN" || d.Additions != 10 || d.ChangedFiles != 3 || d.State != "BLOCKED" || d.DefaultMethod != MethodMerge {
+		t.Fatalf("detail = %+v", d)
+	}
+	wantChecks := []Check{
+		{Name: "test", Status: "completed", Conclusion: "failure", URL: "https://ci/test", RunID: 555},
+		{Name: "external", Status: "in_progress", URL: "https://github.com/y"},
+		{Name: "ci/jenkins", Status: "in_progress", Description: "Build running", URL: "https://jenkins"},
+	}
+	if len(d.CheckRuns) != len(wantChecks) {
+		t.Fatalf("checks = %+v", d.CheckRuns)
+	}
+	for i, c := range wantChecks {
+		if d.CheckRuns[i] != c {
+			t.Errorf("check %d = %+v, want %+v", i, d.CheckRuns[i], c)
+		}
+	}
+	if len(d.Findings) != 1 || d.Findings[0] != (Finding{Path: "a.go", Line: 4, URL: "t1", Text: "Handle the error."}) {
+		t.Errorf("findings = %+v", d.Findings)
+	}
+
+	answer = `{"data": {"repository": {"pullRequest": null}}, "errors": [{"type": "NOT_FOUND", "message": "Could not resolve to a PullRequest"}]}`
+	if _, err := g.Detail(context.Background(), gh, repo, 9); !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+	answer = `{"data": {"repository": null}, "errors": [{"type": "FORBIDDEN", "message": "Resource not accessible by integration"}]}`
+	if _, err := g.Detail(context.Background(), gh, repo, 9); !errors.Is(err, ErrPermission) {
+		t.Errorf("err = %v, want ErrPermission", err)
 	}
 }

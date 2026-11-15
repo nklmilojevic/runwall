@@ -3,10 +3,12 @@
 package pulls
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,6 +54,51 @@ type PR struct {
 	DefaultMethod    string   // the repo's preferred merge method for the viewer
 	Methods          []string // the merge methods the repo allows
 	AutoMergeAllowed bool
+
+	Kritika *Kritika // nil when kritika hasn't reviewed it
+}
+
+// Kritika is the verdict of the kritika review bot, read from its summary comment.
+type Kritika struct {
+	Score       int    // out of 5
+	ReviewedSHA string // the commit kritika reviewed last
+	URL         string // the summary comment
+}
+
+// KritikaPass means kritika gave the current head 5/5.
+func (p PR) KritikaPass() bool {
+	return p.Kritika != nil && p.Kritika.Score == 5 && p.KritikaCurrent()
+}
+
+// KritikaCurrent means kritika's last review is of the current head.
+func (p PR) KritikaCurrent() bool {
+	return p.Kritika != nil && p.Kritika.ReviewedSHA != "" && p.Kritika.ReviewedSHA == p.HeadSHA
+}
+
+var (
+	kritikaScore  = regexp.MustCompile(`Confidence Score: ([0-5])/5`)
+	kritikaCommit = regexp.MustCompile(`Last reviewed commit: \[[^\]]*\]\([^)\s]*/commit/([0-9a-f]{40})`)
+)
+
+// kritikaBot reports whether a comment author is the kritika app (kritikal-github[bot]).
+func kritikaBot(login string) bool { return strings.HasPrefix(login, "kritikal") }
+
+// parseKritika reads kritika's summary comment, which it edits in place on every re-review.
+func parseKritika(author, body, url string) *Kritika {
+	if !kritikaBot(author) || !strings.Contains(body, "<!-- kritika:pr-") {
+		return nil
+	}
+	k := &Kritika{URL: url, Score: -1}
+	if m := kritikaScore.FindAllStringSubmatch(body, -1); len(m) > 0 {
+		k.Score = int(m[len(m)-1][1][0] - '0')
+	}
+	if m := kritikaCommit.FindAllStringSubmatch(body, -1); len(m) > 0 {
+		k.ReviewedSHA = m[len(m)-1][1]
+	}
+	if k.Score < 0 {
+		return nil // a placeholder, for example while the first review runs
+	}
+	return k
 }
 
 // Ready means GitHub would merge it now without any further condition.
@@ -140,15 +187,21 @@ const reposPerQuery = 20
 // prsPerRepo is how many open pull requests are read per repository, oldest first.
 const prsPerRepo = 50
 
-const prFields = `
+// commentsScanned is how many of the first comments are searched for kritika's summary.
+// kritika writes it at its first review, soon after the pull request opens.
+const commentsScanned = 10
+
+var prFields = `
 	id number title url isDraft createdAt updatedAt headRefName baseRefName headRefOid
 	mergeable mergeStateStatus reviewDecision
 	autoMergeRequest { enabledAt }
 	author { __typename login }
-	commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }`
+	commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+	comments(first: ` + strconv.Itoa(commentsScanned) + `) { nodes { author { login } body url } }`
 
-var repoFields = `
-	viewerDefaultMergeMethod mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed autoMergeAllowed
+const settingsFields = `viewerDefaultMergeMethod mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed autoMergeAllowed`
+
+var repoFields = settingsFields + `
 	pullRequests(states: OPEN, first: ` + strconv.Itoa(prsPerRepo) + `, orderBy: {field: CREATED_AT, direction: ASC}) { nodes {` + prFields + `} }`
 
 type gqlError struct {
@@ -196,13 +249,17 @@ func errorsText(errs []gqlError) string {
 	return strings.Join(msgs, "; ")
 }
 
-type gqlRepo struct {
+type gqlSettings struct {
 	ViewerDefaultMergeMethod string `json:"viewerDefaultMergeMethod"`
 	MergeCommitAllowed       bool   `json:"mergeCommitAllowed"`
 	SquashMergeAllowed       bool   `json:"squashMergeAllowed"`
 	RebaseMergeAllowed       bool   `json:"rebaseMergeAllowed"`
 	AutoMergeAllowed         bool   `json:"autoMergeAllowed"`
-	PullRequests             struct {
+}
+
+type gqlRepo struct {
+	gqlSettings
+	PullRequests struct {
 		Nodes []*gqlPR `json:"nodes"`
 	} `json:"pullRequests"`
 }
@@ -237,9 +294,18 @@ type gqlPR struct {
 			} `json:"commit"`
 		} `json:"nodes"`
 	} `json:"commits"`
+	Comments struct {
+		Nodes []*struct {
+			Author *struct {
+				Login string `json:"login"`
+			} `json:"author"`
+			Body string `json:"body"`
+			URL  string `json:"url"`
+		} `json:"nodes"`
+	} `json:"comments"`
 }
 
-func (r gqlRepo) methods() []string {
+func (r gqlSettings) methods() []string {
 	var out []string
 	if r.SquashMergeAllowed {
 		out = append(out, MethodSquash)
@@ -253,7 +319,7 @@ func (r gqlRepo) methods() []string {
 	return out
 }
 
-func convert(repo store.Repo, r gqlRepo, p gqlPR) PR {
+func convert(repo store.Repo, r gqlSettings, p gqlPR) PR {
 	pr := PR{
 		RepoID: repo.ID, Repo: repo.FullName, Owner: repo.Owner,
 		NodeID: p.ID, Number: p.Number, Title: p.Title, URL: p.URL, Draft: p.IsDraft,
@@ -266,6 +332,13 @@ func convert(repo store.Repo, r gqlRepo, p gqlPR) PR {
 	}
 	if n := p.Commits.Nodes; len(n) > 0 && n[0].Commit.StatusCheckRollup != nil {
 		pr.Checks = n[0].Commit.StatusCheckRollup.State
+	}
+	for _, c := range p.Comments.Nodes {
+		if c != nil && c.Author != nil {
+			if k := parseKritika(c.Author.Login, c.Body, c.URL); k != nil {
+				pr.Kritika = k
+			}
+		}
 	}
 	if !ValidMethod(pr.DefaultMethod) {
 		pr.DefaultMethod = MethodMerge
@@ -347,7 +420,7 @@ func (g GitHub) listChunk(ctx context.Context, gh *github.Client, repos []store.
 		}
 		for _, p := range r.PullRequests.Nodes {
 			if p != nil {
-				out = append(out, convert(repo, *r, *p))
+				out = append(out, convert(repo, r.gqlSettings, *p))
 			}
 		}
 	}
@@ -376,4 +449,196 @@ func (g GitHub) EnableAutoMerge(ctx context.Context, gh *github.Client, _ store.
 		return Refused{Message: errorsText(gerrs)}
 	}
 	return nil
+}
+
+// ErrNotFound means GitHub has no such pull request, or the viewer can't see it.
+var ErrNotFound = errors.New("pull request not found")
+
+// Detail is one pull request with its checks and open kritika findings.
+type Detail struct {
+	PR
+	Status       string // OPEN, MERGED or CLOSED
+	Additions    int
+	Deletions    int
+	ChangedFiles int
+	CheckRuns    []Check
+	Findings     []Finding // open kritika review threads
+}
+
+// Check is one check run or commit status on the head commit, with REST-style lowercase
+// status and conclusion values (completed/in_progress/queued, success/failure/...).
+type Check struct {
+	Name        string
+	Status      string
+	Conclusion  string
+	Description string
+	URL         string
+	RunID       int64 // the Actions workflow run behind the check, 0 for other checks
+}
+
+// Finding is an unresolved kritika review thread.
+type Finding struct {
+	Path     string
+	Line     int
+	URL      string
+	Text     string
+	Outdated bool
+}
+
+// findingText caps a finding's text; the full text is one click away on GitHub.
+const findingText = 400
+
+var detailQuery = `query($o: String!, $n: String!, $num: Int!) {
+	repository(owner: $o, name: $n) {
+		` + settingsFields + `
+		pullRequest(number: $num) {` + prFields + `
+			state additions deletions changedFiles
+			reviewThreads(first: 100) { nodes { isResolved isOutdated path line
+				comments(first: 1) { nodes { author { login } url bodyText } } } }
+			checks: commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
+				__typename
+				... on CheckRun { name status conclusion detailsUrl url checkSuite { workflowRun { databaseId } } }
+				... on StatusContext { context state targetUrl description }
+			} } } } } }
+		}
+	}
+}`
+
+type gqlDetail struct {
+	gqlPR
+	State         string `json:"state"`
+	Additions     int    `json:"additions"`
+	Deletions     int    `json:"deletions"`
+	ChangedFiles  int    `json:"changedFiles"`
+	ReviewThreads struct {
+		Nodes []*struct {
+			IsResolved bool   `json:"isResolved"`
+			IsOutdated bool   `json:"isOutdated"`
+			Path       string `json:"path"`
+			Line       int    `json:"line"`
+			Comments   struct {
+				Nodes []*struct {
+					Author *struct {
+						Login string `json:"login"`
+					} `json:"author"`
+					URL      string `json:"url"`
+					BodyText string `json:"bodyText"`
+				} `json:"nodes"`
+			} `json:"comments"`
+		} `json:"nodes"`
+	} `json:"reviewThreads"`
+	Checks struct {
+		Nodes []struct {
+			Commit struct {
+				StatusCheckRollup *struct {
+					Contexts struct {
+						Nodes []*gqlContext `json:"nodes"`
+					} `json:"contexts"`
+				} `json:"statusCheckRollup"`
+			} `json:"commit"`
+		} `json:"nodes"`
+	} `json:"checks"`
+}
+
+type gqlContext struct {
+	Typename string `json:"__typename"`
+	// CheckRun
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	DetailsURL string `json:"detailsUrl"`
+	URL        string `json:"url"`
+	CheckSuite *struct {
+		WorkflowRun *struct {
+			DatabaseID int64 `json:"databaseId"`
+		} `json:"workflowRun"`
+	} `json:"checkSuite"`
+	// StatusContext
+	Context     string `json:"context"`
+	State       string `json:"state"`
+	TargetURL   string `json:"targetUrl"`
+	Description string `json:"description"`
+}
+
+func (c gqlContext) check() Check {
+	if c.Typename == "StatusContext" {
+		ch := Check{Name: c.Context, Description: c.Description, URL: c.TargetURL, Status: "completed"}
+		switch c.State {
+		case "SUCCESS":
+			ch.Conclusion = "success"
+		case "FAILURE", "ERROR":
+			ch.Conclusion = "failure"
+		case "PENDING":
+			ch.Status = "in_progress"
+		default: // EXPECTED: required, but nothing reported yet
+			ch.Status = "queued"
+		}
+		return ch
+	}
+	ch := Check{Name: c.Name, Status: strings.ToLower(c.Status), Conclusion: strings.ToLower(c.Conclusion), URL: cmp.Or(c.DetailsURL, c.URL)}
+	if c.CheckSuite != nil && c.CheckSuite.WorkflowRun != nil {
+		ch.RunID = c.CheckSuite.WorkflowRun.DatabaseID
+	}
+	return ch
+}
+
+// Detail reads one pull request, in any state, with its checks and open kritika findings.
+func (g GitHub) Detail(ctx context.Context, gh *github.Client, repo store.Repo, number int) (Detail, error) {
+	var data struct {
+		Repository *struct {
+			gqlSettings
+			PullRequest *gqlDetail `json:"pullRequest"`
+		} `json:"repository"`
+	}
+	gerrs, err := g.graphql(ctx, gh, detailQuery, map[string]any{"o": repo.Owner, "n": repo.Name, "num": number}, &data)
+	if err != nil {
+		return Detail{}, err
+	}
+	if data.Repository == nil || data.Repository.PullRequest == nil {
+		switch {
+		case forbidden(gerrs):
+			return Detail{}, fmt.Errorf("%w: %s", ErrPermission, errorsText(gerrs))
+		case len(gerrs) > 0 && !notFound(gerrs):
+			return Detail{}, Refused{Message: errorsText(gerrs)}
+		}
+		return Detail{}, ErrNotFound
+	}
+	p := data.Repository.PullRequest
+	d := Detail{PR: convert(repo, data.Repository.gqlSettings, p.gqlPR), Status: p.State,
+		Additions: p.Additions, Deletions: p.Deletions, ChangedFiles: p.ChangedFiles}
+	if n := p.Checks.Nodes; len(n) > 0 && n[0].Commit.StatusCheckRollup != nil {
+		for _, c := range n[0].Commit.StatusCheckRollup.Contexts.Nodes {
+			if c != nil {
+				d.CheckRuns = append(d.CheckRuns, c.check())
+			}
+		}
+	}
+	for _, t := range p.ReviewThreads.Nodes {
+		if t == nil || t.IsResolved || len(t.Comments.Nodes) == 0 || t.Comments.Nodes[0] == nil {
+			continue
+		}
+		c := t.Comments.Nodes[0]
+		if c.Author == nil || !kritikaBot(c.Author.Login) {
+			continue
+		}
+		text := strings.Join(strings.Fields(c.BodyText), " ")
+		if r := []rune(text); len(r) > findingText {
+			text = string(r[:findingText]) + "…"
+		}
+		d.Findings = append(d.Findings, Finding{Path: t.Path, Line: t.Line, URL: c.URL, Text: text, Outdated: t.IsOutdated})
+	}
+	// Permission errors on parts of the answer (for example commit statuses) leave those parts empty.
+	if len(gerrs) > 0 && forbidden(gerrs) {
+		return d, fmt.Errorf("%w: %s", ErrPermission, errorsText(gerrs))
+	}
+	return d, nil
+}
+
+func notFound(errs []gqlError) bool {
+	for _, e := range errs {
+		if e.Type != "NOT_FOUND" {
+			return false
+		}
+	}
+	return true
 }

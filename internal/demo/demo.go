@@ -218,7 +218,12 @@ func Seed(ctx context.Context, st *store.Store, now time.Time) error {
 		}
 		id++
 	}
-	return nil
+	workflows := map[string][]string{}
+	index := map[string]int{}
+	for ri, r := range repos {
+		workflows[r.owner+"/"+r.name], index[r.owner+"/"+r.name] = r.workflows, ri
+	}
+	return seedPullRuns(ctx, st, now, index, workflows)
 }
 
 func demoSteps(j store.Job) []store.Step {
